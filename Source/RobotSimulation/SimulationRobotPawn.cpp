@@ -48,6 +48,9 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* PlayerInpu
     PlayerInputComponent->BindAxis("MoveForward", this, &ASimulationRobotPawn::ThrottleInput);
     PlayerInputComponent->BindAxis("MoveRight", this, &ASimulationRobotPawn::SteeringInput);
     PlayerInputComponent->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
+
+    //Handbrake
+    PlayerInputComponent->BindAxis("Handbrake", this, &ASimulationRobotPawn::HandbrakeInput);
 }
 
 void ASimulationRobotPawn::ThrottleInput(float Val)
@@ -79,6 +82,15 @@ void ASimulationRobotPawn::TogglePatrolMode()
     CurrentWPIndex = 0;
 
     UE_LOG(LogTemp, Log, TEXT("Patrol mode: %s"), bPatrolMode ? TEXT("ON") : TEXT("OFF"));
+}
+
+//Handbrake
+void ASimulationRobotPawn::HandbrakeInput(float Val)
+{
+    if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+    {
+        MoveComp->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
+    }
 }
 
 void ASimulationRobotPawn::Tick(float DeltaTime)

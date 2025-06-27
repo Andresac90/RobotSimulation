@@ -28,6 +28,9 @@ protected:
     void TogglePatrolMode();
     void PatrolTick(float DeltaTime);
 
+    //Handbrake
+    void HandbrakeInput(float Val);
+
     // Waypoints
     UPROPERTY(EditAnywhere, Category = "Patrol")
     TArray<AActor*> Waypoints;
