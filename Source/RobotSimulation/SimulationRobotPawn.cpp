@@ -6,14 +6,14 @@
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit)
 {
-    // AI possession
+    // Let AIController possess this pawn at spawn
     AutoPossessPlayer = EAutoReceiveInput::Disabled;
     AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
     AIControllerClass = AAIController::StaticClass();
 
     PrimaryActorTick.bCanEverTick = true;
 
-    // Engine torque setup
+    // Give the engine a real torque curve
     if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
     {
         MoveComp->EngineSetup.TorqueCurve.EditorCurveData.Reset();
@@ -27,25 +27,43 @@ void ASimulationRobotPawn::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Gather Waypoints by tag
-    if (Waypoints.Num() == 0)
+    // 1) Find every AWaypoint in the level
     {
-        UGameplayStatics::GetAllActorsWithTag(GetWorld(), TEXT("Waypoint"), Waypoints);
+        TArray<AActor*> Found;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Found);
+        for (AActor* A : Found)
+            if (auto* WP = Cast<AWaypoint>(A))
+                Waypoints.Add(WP);
     }
 
-    // Spawn HUD
+    // 2) Sort them by their PatrolOrder property
+    Waypoints.Sort([](const AWaypoint& A, const AWaypoint& B) {
+        return A.PatrolOrder < B.PatrolOrder;
+        });
+
+    // 3) Spawn the HUD
     if (HUDWidgetClass)
     {
         HUDWidget = CreateWidget<UUserWidget>(GetWorld(), HUDWidgetClass);
-        if (HUDWidget) HUDWidget->AddToViewport();
+        if (HUDWidget)
+            HUDWidget->AddToViewport();
     }
 
-    // Bind MoveTo callback
+    // 4) Cache AIController & bind our completion callback
     AICon = Cast<AAIController>(GetController());
     if (AICon && AICon->GetPathFollowingComponent())
     {
         AICon->GetPathFollowingComponent()
-            ->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
+            ->OnRequestFinished
+            .AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
+    }
+
+    // 5) Kick off the patrol immediately (optional)
+    if (AICon && Waypoints.Num() > 0)
+    {
+        bIsPatrolMode = true;
+        CurrentWPIndex = 0;
+        AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
     }
 }
 
@@ -61,22 +79,22 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
+    //UI value
     LastThrottleVal = Val;
+
     if (!bIsPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-    {
         if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
             MoveComp->SetThrottleInput(Val);
-    }
 }
 
 void ASimulationRobotPawn::SteeringInput(float Val)
 {
+    //UI value
     LastSteeringVal = Val;
+
     if (!bIsPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-    {
         if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
             MoveComp->SetSteeringInput(Val);
-    }
 }
 
 void ASimulationRobotPawn::HandbrakeInput(float Val)
@@ -88,17 +106,17 @@ void ASimulationRobotPawn::HandbrakeInput(float Val)
 void ASimulationRobotPawn::TogglePatrolMode()
 {
     bIsPatrolMode = !bIsPatrolMode;
-    CurrentWPIndex = 0;
+    if (!AICon) return;
 
-    if (AICon)
+    if (bIsPatrolMode && Waypoints.Num() > 0)
     {
-        if (bIsPatrolMode && Waypoints.Num() > 0)
-            AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
-        else
-            AICon->StopMovement();
+        CurrentWPIndex = 0;
+        AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
     }
-
-    UE_LOG(LogTemp, Log, TEXT("Patrol mode: %s"), bIsPatrolMode ? TEXT("ON") : TEXT("OFF"));
+    else
+    {
+        AICon->StopMovement();
+    }
 }
 
 void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
@@ -106,6 +124,7 @@ void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingRes
     if (!bIsPatrolMode || Waypoints.Num() == 0 || !AICon)
         return;
 
+    // Advance & wrap
     CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
     AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
 }
