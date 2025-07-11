@@ -3,7 +3,10 @@
 #include "CoreMinimal.h"
 #include "WheeledVehiclePawn.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
-#include "Blueprint/UserWidget.h"            // for UUserWidget
+#include "AIController.h"
+#include "Navigation/PathFollowingComponent.h"   // for FPathFollowingResult
+#include "AITypes.h"                             // for FAIRequestID
+#include "Blueprint/UserWidget.h"
 #include "SimulationRobotPawn.generated.h"
 
 UCLASS()
@@ -16,29 +19,18 @@ public:
 
 protected:
     virtual void BeginPlay() override;
-    virtual void Tick(float DeltaTime) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
-    // Manual driving handlers
+    // Manual driving
     void ThrottleInput(float Val);
     void SteeringInput(float Val);
-
-    // Patrol
-    UFUNCTION(BlueprintCallable, Category = "Patrol")
-    void TogglePatrolMode();
-    void PatrolTick(float DeltaTime);
-
-    //Handbrake
     void HandbrakeInput(float Val);
 
-    // Waypoints
-    UPROPERTY(EditAnywhere, Category = "Patrol")
-    TArray<AActor*> Waypoints;
-    UPROPERTY(EditAnywhere, Category = "Patrol")
-    float AcceptanceRadius = 200.f;
+    // Patrol toggle
+    UFUNCTION(BlueprintCallable, Category = "Patrol")
+    void TogglePatrolMode();
 
-    // —— UI Stats ——
-    // Exposed to Blueprint so UMG can bind to them
+    // UI stats
     UPROPERTY(BlueprintReadOnly, Category = "Stats")
     bool bIsPatrolMode = false;
 
@@ -48,14 +40,23 @@ protected:
     UPROPERTY(BlueprintReadOnly, Category = "Stats")
     float LastSteeringVal = 0.f;
 
-    // Widget class (set this to your UMG Blueprint in the editor)
+    // Waypoints placed in-level and tagged "Waypoint"
+    UPROPERTY(EditAnywhere, Category = "Patrol")
+    TArray<AActor*> Waypoints;
+
+    UPROPERTY(EditAnywhere, Category = "Patrol")
+    float AcceptanceRadius = 200.f;
+
+    // HUD widget
     UPROPERTY(EditAnywhere, Category = "UI")
     TSubclassOf<UUserWidget> HUDWidgetClass;
 
 private:
     int32 CurrentWPIndex = 0;
-    bool  bPatrolMode = false;
+    AAIController* AICon = nullptr;
 
-    // Instance of the widget
+    // ← no UFUNCTION() here!
+    void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
+
     UUserWidget* HUDWidget = nullptr;
 };

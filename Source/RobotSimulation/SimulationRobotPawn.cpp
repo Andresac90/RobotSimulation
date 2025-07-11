@@ -1,16 +1,19 @@
 ﻿#include "SimulationRobotPawn.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
-#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Blueprint/UserWidget.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit)
 {
-    PrimaryActorTick.bCanEverTick = true;
-    AutoPossessPlayer = EAutoReceiveInput::Player0;
+    // AI possession
+    AutoPossessPlayer = EAutoReceiveInput::Disabled;
+    AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+    AIControllerClass = AAIController::StaticClass();
 
-    // Torque curve so it actually moves
+    PrimaryActorTick.bCanEverTick = true;
+
+    // Engine torque setup
     if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
     {
         MoveComp->EngineSetup.TorqueCurve.EditorCurveData.Reset();
@@ -24,20 +27,25 @@ void ASimulationRobotPawn::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Auto-find waypoints by tag “Waypoint”
+    // Gather Waypoints by tag
     if (Waypoints.Num() == 0)
     {
-        TArray<AActor*> Found;
-        UGameplayStatics::GetAllActorsWithTag(GetWorld(), TEXT("Waypoint"), Found);
-        Waypoints = Found;
+        UGameplayStatics::GetAllActorsWithTag(GetWorld(), TEXT("Waypoint"), Waypoints);
     }
 
-    // Spawn the HUD widget
+    // Spawn HUD
     if (HUDWidgetClass)
     {
         HUDWidget = CreateWidget<UUserWidget>(GetWorld(), HUDWidgetClass);
-        if (HUDWidget)
-            HUDWidget->AddToViewport();
+        if (HUDWidget) HUDWidget->AddToViewport();
+    }
+
+    // Bind MoveTo callback
+    AICon = Cast<AAIController>(GetController());
+    if (AICon && AICon->GetPathFollowingComponent())
+    {
+        AICon->GetPathFollowingComponent()
+            ->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
     }
 }
 
@@ -47,18 +55,14 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 
     PlayerInputComponent->BindAxis("MoveForward", this, &ASimulationRobotPawn::ThrottleInput);
     PlayerInputComponent->BindAxis("MoveRight", this, &ASimulationRobotPawn::SteeringInput);
-    PlayerInputComponent->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
-
-    //Handbrake
     PlayerInputComponent->BindAxis("Handbrake", this, &ASimulationRobotPawn::HandbrakeInput);
+    PlayerInputComponent->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
 }
 
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
-    UE_LOG(LogTemp, Log, TEXT("ThrottleInput called: %f"), Val);
-
     LastThrottleVal = Val;
-    if (!bPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
+    if (!bIsPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
     {
         if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
             MoveComp->SetThrottleInput(Val);
@@ -68,63 +72,40 @@ void ASimulationRobotPawn::ThrottleInput(float Val)
 void ASimulationRobotPawn::SteeringInput(float Val)
 {
     LastSteeringVal = Val;
-    if (!bPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
+    if (!bIsPatrolMode && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
     {
         if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
             MoveComp->SetSteeringInput(Val);
     }
 }
 
-void ASimulationRobotPawn::TogglePatrolMode()
-{
-    bPatrolMode = !bPatrolMode;
-    bIsPatrolMode = bPatrolMode;    // expose to UI
-    CurrentWPIndex = 0;
-
-    UE_LOG(LogTemp, Log, TEXT("Patrol mode: %s"), bPatrolMode ? TEXT("ON") : TEXT("OFF"));
-}
-
-//Handbrake
 void ASimulationRobotPawn::HandbrakeInput(float Val)
 {
     if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-    {
         MoveComp->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
-    }
 }
 
-void ASimulationRobotPawn::Tick(float DeltaTime)
+void ASimulationRobotPawn::TogglePatrolMode()
 {
-    Super::Tick(DeltaTime);
+    bIsPatrolMode = !bIsPatrolMode;
+    CurrentWPIndex = 0;
 
-    if (bPatrolMode && Waypoints.Num() > 0)
-        PatrolTick(DeltaTime);
-}
-
-void ASimulationRobotPawn::PatrolTick(float DeltaTime)
-{
-    AActor* WP = Waypoints[CurrentWPIndex];
-    if (!WP) return;
-
-    FVector ToWP = WP->GetActorLocation() - GetActorLocation();
-    float   Dist = ToWP.Size();
-    FVector Dir = ToWP.GetSafeNormal();
-
-    float ForwardDot = FVector::DotProduct(GetActorForwardVector(), Dir);
-    float RightDot = FVector::DotProduct(GetActorRightVector(), Dir);
-
-    float ThrottleVal = FMath::Abs(ForwardDot);
-    float SteeringVal = (ForwardDot >= 0.f) ? RightDot : -RightDot;
-
-    LastThrottleVal = ThrottleVal;
-    LastSteeringVal = SteeringVal;
-
-    if (auto* MoveComp = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+    if (AICon)
     {
-        MoveComp->SetThrottleInput(ThrottleVal);
-        MoveComp->SetSteeringInput(SteeringVal);
+        if (bIsPatrolMode && Waypoints.Num() > 0)
+            AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
+        else
+            AICon->StopMovement();
     }
 
-    if (Dist < AcceptanceRadius)
-        CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
+    UE_LOG(LogTemp, Log, TEXT("Patrol mode: %s"), bIsPatrolMode ? TEXT("ON") : TEXT("OFF"));
+}
+
+void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
+{
+    if (!bIsPatrolMode || Waypoints.Num() == 0 || !AICon)
+        return;
+
+    CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
+    AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
 }

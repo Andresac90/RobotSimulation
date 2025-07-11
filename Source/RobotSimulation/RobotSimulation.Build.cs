@@ -1,6 +1,4 @@
-﻿// RobotSimulation.Build.cs
-
-using UnrealBuildTool;
+﻿using UnrealBuildTool;
 
 public class RobotSimulation : ModuleRules
 {
@@ -14,11 +12,13 @@ public class RobotSimulation : ModuleRules
             "Engine",
             "InputCore",
             "ChaosVehicles",
-            "UMG"              
+            "UMG",
+            "AIModule",          
+            "NavigationSystem"   
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
-            "Slate",         
+            "Slate",
             "SlateCore"
         });
     }
