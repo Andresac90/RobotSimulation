@@ -1,18 +1,20 @@
-﻿#pragma once
+﻿// SimulationRobotPawn.h
+#pragma once
 
 #include "CoreMinimal.h"
 #include "WheeledVehiclePawn.h"
-#include "PatrolVehicleMovementComponent.h"
-#include "RobotAIController.h"
-#include "Navigation/PathFollowingComponent.h" // for FPathFollowingResult
-#include "AITypes.h"                           // for FAIRequestID
+#include "Navigation/PathFollowingComponent.h"
+#include "AITypes.h"
+#include "Camera/CameraComponent.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Blueprint/UserWidget.h"
-#include "Waypoint.h"
 #include "SimulationRobotPawn.generated.h"
 
-/**
- * A wheeled “robot” pawn that can toggle between manual driving and AI patrol mode.
- */
+// Forward declarations
+class AWaypoint;
+class AAIController;
+
 UCLASS()
 class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
 {
@@ -21,66 +23,120 @@ class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
 public:
     ASimulationRobotPawn(const FObjectInitializer& ObjInit);
 
-    /** Are we currently in AI‑patrol mode? */
-    UPROPERTY(BlueprintReadWrite, Category = "Stats")
-    bool bIsPatrolMode = false;
+    virtual void Tick(float DeltaTime) override;
 
-    /** Last manual throttle input value */
-    UPROPERTY(BlueprintReadOnly, Category = "Stats")
-    float LastThrottleVal = 0.f;
+    /** Toggle engine speed cap */
+    UFUNCTION(BlueprintCallable, Category = "Control")
+    void ToggleSpeedLimit();
 
-    /** Last manual steering input value */
-    UPROPERTY(BlueprintReadOnly, Category = "Stats")
-    float LastSteeringVal = 0.f;
+    /** Toggle AI/manual patrol */
+    UFUNCTION(BlueprintCallable, Category = "Patrol")
+    void TogglePatrolMode();
 
-    /** Whether the engine max‑RPM is currently limited */
-    UPROPERTY(BlueprintReadOnly, Category = "Stats")
-    bool bSpeedLimited = true;
+    /** Toggle headlights on/off */
+    UFUNCTION(BlueprintCallable, Category = "Lights")
+    void ToggleLights();
 
-    /** Index of the current waypoint in Waypoints[] */
-    UPROPERTY(BlueprintReadOnly, Category = "Stats")
-    int32 CurrentWPIndex = 0;
+    /** Begin mission (starts patrol) */
+    UFUNCTION(BlueprintCallable, Category = "Mission")
+    void BeginMission();
+
+    /** End mission (stops patrol) */
+    UFUNCTION(BlueprintCallable, Category = "Mission")
+    void EndMission();
+
+    /**
+     * Push fresh HUD values each frame
+     * (renamed parameters to avoid hiding UHT‐generated locals)
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+    void OnUpdateHUD(
+        float SpeedKmh,
+        bool  bSpeedLimitedStatus,
+        bool  bLightsOnStatus,
+        bool  bPatrolModeStatus,
+        int32 TreatsCount,
+        int32 CurrentWPDisplayIndex,
+        int32 TotalWPCount
+    );
 
 protected:
-    // Standard pawn lifecycle
     virtual void BeginPlay() override;
     virtual void PossessedBy(AController* NewController) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
-    // Manual‑drive handlers
+    // Driving handlers
     void ThrottleInput(float Val);
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
 
-    /** Bound to input: toggles AI patrol on/off */
-    UFUNCTION(BlueprintCallable, Category = "Patrol")
-    void TogglePatrolMode();
+    // Look handlers (3rd‑person)
+    void LookUp(float Val);
+    void Turn(float Val);
 
-    /** Bound to input: toggles engine speed limit on/off */
-    UFUNCTION(BlueprintCallable, Category = "Control")
-    void ToggleSpeedLimit();
+    // AI move callback
+    void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
 
-    /** How close to a waypoint before we consider it “reached” */
+    // Apply or remove the speed cap
+    void ApplySpeedLimit();
+
+private:
+    // — Patrol state —
+    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
+    bool bIsPatrolMode = false;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
+    int32 CurrentWPIndex = 0;
+
+    TArray<AActor*> Waypoints;
+    UPROPERTY()
+    AAIController* AICon = nullptr;
+
+    // stub for future treat detection
+    UPROPERTY(BlueprintReadOnly, Category = "Stats", meta = (AllowPrivateAccess = "true"))
+    int32 TreatsDetected = 0;
+
+    // — Camera & view —
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    USpringArmComponent* SpringArm;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UCameraComponent* ThirdPersonCamera;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UCameraComponent* AerialCamera;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    float CameraBlendTime = 1.f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera|Control", meta = (AllowPrivateAccess = "true"))
+    float LookUpSpeed = 45.f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera|Control", meta = (AllowPrivateAccess = "true"))
+    float TurnSpeed = 90.f;
+
+    bool bUsingAerialView = false;
+    void ChangeView();
+
+    // — Lights —
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
+    USpotLightComponent* Headlight;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
+    bool bLightsOn = true;
+
+    // — Speed limit —
+    UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true"))
+    bool bSpeedLimited = false;
+
+    // — Parameters —
     UPROPERTY(EditAnywhere, Category = "Patrol")
     float AcceptanceRadius = 200.f;
 
-    /** Optional HUD widget class to display stats/UI */
+    // — UI widget classes —
     UPROPERTY(EditAnywhere, Category = "UI")
-    TSubclassOf<UUserWidget> HUDWidgetClass;
+    TSubclassOf<UUserWidget> RobotStatsWidgetClass;
 
-private:
-    // All waypoints found in the level, sorted by PatrolOrder
-    TArray<AWaypoint*> Waypoints;
-
-    // The AI controller that will actually drive us
-    AAIController* AICon = nullptr;
-
-    // Called whenever a MoveToActor request finishes
-    void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
-
-    // Applies the current speed‑limit setting to the vehicle’s engine
-    void ApplySpeedLimit();
-
-    // Spawned HUD instance (if any)
-    UUserWidget* HUDWidget = nullptr;
+    UPROPERTY(EditAnywhere, Category = "UI")
+    TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
 };
