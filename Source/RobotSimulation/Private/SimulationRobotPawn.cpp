@@ -34,7 +34,8 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
 
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
     AerialCamera->SetupAttachment(RootComponent);
-    AerialCamera->SetRelativeLocation({ 0,0,1500 });
+    AerialCamera->SetRelativeLocation({ 0,0,5000 });
+    AerialCamera->SetRelativeRotation({ -90,0,0 });
     AerialCamera->SetAutoActivate(false);
     AerialCamera->bEditableWhenInherited = true;
 
