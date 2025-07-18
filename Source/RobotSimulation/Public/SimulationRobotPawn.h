@@ -1,4 +1,5 @@
 ﻿// SimulationRobotPawn.h
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -52,7 +53,7 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Stats")
     float SpeedKmh = 0.f;
 
-    /** If speed‑limit is on, cap throttle when at/above this (km/h) */
+    /** If speed‑limit is on, cap throttle at this (km/h) */
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0"))
     float MaxSpeedKmh = 5.f;
 
@@ -101,12 +102,13 @@ private:
     int32 CurrentWPIndex = 0;
 
     TArray<AActor*> Waypoints;
-    UPROPERTY() AAIController* AICon = nullptr;
+    UPROPERTY()
+    AAIController* AICon = nullptr;
 
     UPROPERTY(BlueprintReadOnly, Category = "Stats", meta = (AllowPrivateAccess = "true"))
     int32 TreatsDetected = 0;
 
-    // — Camera & view —  
+    // — Camera & view —
     /** Editable in BP so you can reposition at will */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     USpringArmComponent* SpringArm;

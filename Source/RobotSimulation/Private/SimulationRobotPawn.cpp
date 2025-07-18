@@ -1,4 +1,5 @@
 ﻿// SimulationRobotPawn.cpp
+
 #include "SimulationRobotPawn.h"
 #include "PatrolVehicleMovementComponent.h"
 #include "RobotAIController.h"
@@ -33,7 +34,7 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
 
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
     AerialCamera->SetupAttachment(RootComponent);
-    AerialCamera->SetRelativeLocation(FVector(0, 0, 1500));
+    AerialCamera->SetRelativeLocation({ 0,0,1500 });
     AerialCamera->SetAutoActivate(false);
     AerialCamera->bEditableWhenInherited = true;
 
@@ -57,8 +58,10 @@ void ASimulationRobotPawn::BeginPlay()
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
         PC->bShowMouseCursor = true;
-        PC->SetInputMode(FInputModeGameAndUI()
-            .SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
+        PC->SetInputMode(
+            FInputModeGameAndUI().
+            SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock)
+        );
     }
 
     // gather & sort waypoints
@@ -66,7 +69,9 @@ void ASimulationRobotPawn::BeginPlay()
     Waypoints.Sort([](const AActor& A, const AActor& B) {
         auto* WA = Cast<AWaypoint>(&A);
         auto* WB = Cast<AWaypoint>(&B);
-        return WA && WB ? WA->PatrolOrder < WB->PatrolOrder : false;
+        return WA && WB
+            ? WA->PatrolOrder < WB->PatrolOrder
+            : false;
         });
 
     // spawn UI panels
@@ -77,6 +82,43 @@ void ASimulationRobotPawn::BeginPlay()
     if (PatrolInfoWidgetClass)
         if (auto* W = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass))
             W->AddToViewport();
+
+    // ——— CAMERA FALLBACK FINDER ———
+    TArray<UCameraComponent*> FoundCams;
+    GetComponents<UCameraComponent>(FoundCams);
+
+    if (!ThirdPersonCamera)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ThirdPersonCamera was null, attempting fallback"));
+        for (auto* Cam : FoundCams)
+            if (Cam->ComponentHasTag(FName("ThirdPerson")))
+            {
+                ThirdPersonCamera = Cam;
+                break;
+            }
+        if (!ThirdPersonCamera && FoundCams.Num() > 0)
+            ThirdPersonCamera = FoundCams[0];
+    }
+
+    if (!AerialCamera)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("AerialCamera was null, attempting fallback"));
+        for (auto* Cam : FoundCams)
+            if (Cam->ComponentHasTag(FName("Aerial")))
+            {
+                AerialCamera = Cam;
+                break;
+            }
+        if (!AerialCamera && FoundCams.Num() > 1)
+            AerialCamera = FoundCams[1];
+    }
+
+    if (!ThirdPersonCamera || !AerialCamera)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("Camera fallback still failed! "
+                "Make sure your BP Pawn has subobjects named/s tagged correctly."));
+    }
 
     // enforce initial speed cap
     ToggleSpeedLimit();
@@ -129,15 +171,11 @@ void ASimulationRobotPawn::ThrottleInput(float Val)
 {
     // clamp throttle if speed‑limit is on and we've hit/exceeded MaxSpeedKmh
     if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh)
-    {
         Val = 0.f;
-    }
 
     if (!bIsPatrolMode)
-    {
         if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
             M->SetThrottleInput(Val);
-    }
 }
 
 void ASimulationRobotPawn::SteeringInput(float Val)
@@ -159,13 +197,15 @@ void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
 void ASimulationRobotPawn::LookUp(float Val)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(FRotator(Val * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
+        SpringArm->AddLocalRotation(
+            FRotator(Val * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
 }
 
 void ASimulationRobotPawn::Turn(float Val)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(FRotator(0, Val * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
+        SpringArm->AddLocalRotation(
+            FRotator(0, Val * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
 }
 
 void ASimulationRobotPawn::ToggleSpeedLimit()
@@ -176,27 +216,69 @@ void ASimulationRobotPawn::ToggleSpeedLimit()
 
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
-    // we leave the RPM curve alone now — throttle clamping does the real cap
+    // We clamp throttle in ThrottleInput() so MaxRPM stays high enough for responsiveness
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-    {
-        C->EngineSetup.MaxRPM = bSpeedLimited ? 3000.f : 3000.f;
-        // (optional) you can still tweak torque‐curve here if you like
-    }
+        C->EngineSetup.MaxRPM = 3000.f;
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
 {
+    // Flip our flag first
     bIsPatrolMode = !bIsPatrolMode;
-    if (!AICon) AICon = Cast<AAIController>(GetController());
 
-    if (bIsPatrolMode && Waypoints.Num())
+    if (bIsPatrolMode)
     {
-        CurrentWPIndex = 0;
-        AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
+        // → ENTER PATROL MODE
+        // 1) Unpossess the human player
+        if (auto* PC = Cast<APlayerController>(GetController()))
+        {
+            PC->UnPossess();
+        }
+
+        // 2) Spawn our AIController if we don't already have one
+        if (!AICon)
+        {
+            FActorSpawnParameters SpawnParams;
+            SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+            AICon = GetWorld()->SpawnActor<ARobotAIController>(
+                ARobotAIController::StaticClass(),
+                GetActorLocation(),
+                GetActorRotation(),
+                SpawnParams
+            );
+        }
+
+        // 3) Have the AIController possess *this* pawn
+        AICon->Possess(this);
+
+        // 4) Hook its OnRequestFinished (if not already)
+        if (auto* PF = AICon->GetPathFollowingComponent())
+        {
+            PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
+        }
+
+        // 5) Kick off the path
+        if (Waypoints.Num() > 0)
+        {
+            CurrentWPIndex = 0;
+            AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
+        }
     }
-    else if (AICon)
+    else
     {
-        AICon->StopMovement();
+        // → EXIT PATROL MODE
+        // 1) Stop & unpossess the AI
+        if (AICon)
+        {
+            AICon->StopMovement();
+            AICon->UnPossess();
+        }
+
+        // 2) Re‑possess with the PlayerController
+        if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
+        {
+            PC->Possess(this);
+        }
     }
 }
 
@@ -206,28 +288,28 @@ void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode)  TogglePatrolMode()
 void ASimulationRobotPawn::ToggleLights()
 {
     bLightsOn = !bLightsOn;
-    if (Headlight) Headlight->SetVisibility(bLightsOn);
+    if (Headlight)
+        Headlight->SetVisibility(bLightsOn);
 }
 
 void ASimulationRobotPawn::ChangeView()
 {
     bUsingAerialView = !bUsingAerialView;
 
-    auto* PC = Cast<APlayerController>(GetController());
-    if (!PC)
+    if (auto* PC = Cast<APlayerController>(GetController()))
+    {
+        ThirdPersonCamera->SetActive(!bUsingAerialView);
+        AerialCamera->SetActive(bUsingAerialView);
+
+        FViewTargetTransitionParams Params;
+        Params.BlendTime = CameraBlendTime;
+        Params.BlendFunction = VTBlend_Cubic;
+        PC->SetViewTarget(this, Params);
+    }
+    else
     {
         UE_LOG(LogTemp, Warning, TEXT("ChangeView(): no PlayerController"));
-        return;
     }
-
-    // cameras should now always be valid
-    ThirdPersonCamera->SetActive(!bUsingAerialView);
-    AerialCamera->SetActive(bUsingAerialView);
-
-    FViewTargetTransitionParams Params;
-    Params.BlendTime = CameraBlendTime;
-    Params.BlendFunction = VTBlend_Cubic;
-    PC->SetViewTarget(this, Params);
 }
 
 void ASimulationRobotPawn::PossessedBy(AController* NewController)
