@@ -11,7 +11,6 @@
 #include "Blueprint/UserWidget.h"
 #include "SimulationRobotPawn.generated.h"
 
-// Forward declarations
 class AWaypoint;
 class AAIController;
 
@@ -25,7 +24,7 @@ public:
 
     virtual void Tick(float DeltaTime) override;
 
-    /** Toggle engine speed cap */
+    /** Toggle engine speed cap on/off */
     UFUNCTION(BlueprintCallable, Category = "Control")
     void ToggleSpeedLimit();
 
@@ -45,13 +44,22 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Mission")
     void EndMission();
 
-    /**
-     * Push fresh HUD values each frame
-     * (renamed parameters to avoid hiding UHT‐generated locals)
-     */
+    /** Smoothly switch between 3rd‑person & aerial views */
+    UFUNCTION(BlueprintCallable, Category = "Camera")
+    void ChangeView();
+
+    /** Current forward speed in km/h (updated each Tick) */
+    UPROPERTY(BlueprintReadOnly, Category = "Stats")
+    float SpeedKmh = 0.f;
+
+    /** If speed‑limit is on, cap throttle when at/above this (km/h) */
+    UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0"))
+    float MaxSpeedKmh = 5.f;
+
+    /** Push fresh stats/UI each frame */
     UFUNCTION(BlueprintImplementableEvent, Category = "UI")
     void OnUpdateHUD(
-        float SpeedKmh,
+        float InSpeedKmh,
         bool  bSpeedLimitedStatus,
         bool  bLightsOnStatus,
         bool  bPatrolModeStatus,
@@ -65,19 +73,23 @@ protected:
     virtual void PossessedBy(AController* NewController) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
-    // Driving handlers
+    // Driving
     void ThrottleInput(float Val);
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
 
-    // Look handlers (3rd‑person)
+    // Look (3rd‑person)
     void LookUp(float Val);
     void Turn(float Val);
 
-    // AI move callback
+    // LMB‑drag rotate camera
+    void StartCameraRotate();
+    void StopCameraRotate();
+
+    // AI path callback
     void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
 
-    // Apply or remove the speed cap
+    // apply the speed cap property
     void ApplySpeedLimit();
 
 private:
@@ -89,21 +101,20 @@ private:
     int32 CurrentWPIndex = 0;
 
     TArray<AActor*> Waypoints;
-    UPROPERTY()
-    AAIController* AICon = nullptr;
+    UPROPERTY() AAIController* AICon = nullptr;
 
-    // stub for future treat detection
     UPROPERTY(BlueprintReadOnly, Category = "Stats", meta = (AllowPrivateAccess = "true"))
     int32 TreatsDetected = 0;
 
-    // — Camera & view —
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    // — Camera & view —  
+    /** Editable in BP so you can reposition at will */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     USpringArmComponent* SpringArm;
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     UCameraComponent* ThirdPersonCamera;
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     UCameraComponent* AerialCamera;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
@@ -116,7 +127,7 @@ private:
     float TurnSpeed = 90.f;
 
     bool bUsingAerialView = false;
-    void ChangeView();
+    bool bRotatingCamera = false;
 
     // — Lights —
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
@@ -129,7 +140,7 @@ private:
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true"))
     bool bSpeedLimited = false;
 
-    // — Parameters —
+    // — Patrol settings —
     UPROPERTY(EditAnywhere, Category = "Patrol")
     float AcceptanceRadius = 200.f;
 

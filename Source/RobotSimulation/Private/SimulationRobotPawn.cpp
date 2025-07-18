@@ -10,6 +10,7 @@
 #include "Waypoint.h"
 #include "AIController.h"
 #include "Engine/Engine.h"
+#include "Camera/PlayerCameraManager.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit
@@ -18,29 +19,31 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
 {
     PrimaryActorTick.bCanEverTick = true;
 
-    // Spring arm + third‑person camera
+    // --- Cameras & spring arm (editable in BP) ---
     SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
     SpringArm->SetupAttachment(RootComponent);
     SpringArm->TargetArmLength = 500.f;
     SpringArm->bUsePawnControlRotation = false;
+    SpringArm->bEditableWhenInherited = true;
 
     ThirdPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ThirdPersonCam"));
     ThirdPersonCamera->SetupAttachment(SpringArm);
     ThirdPersonCamera->bUsePawnControlRotation = false;
+    ThirdPersonCamera->bEditableWhenInherited = true;
 
-    // Aerial camera, start deactivated
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
     AerialCamera->SetupAttachment(RootComponent);
     AerialCamera->SetRelativeLocation(FVector(0, 0, 1500));
     AerialCamera->SetAutoActivate(false);
+    AerialCamera->bEditableWhenInherited = true;
 
     // Headlight
     Headlight = CreateDefaultSubobject<USpotLightComponent>(TEXT("Headlight"));
     Headlight->SetupAttachment(RootComponent);
-    Headlight->SetIntensity(5000.f);
+    Headlight->Intensity = 5000.f;
     bLightsOn = true;
 
-    // Input possession
+    // Possession
     AutoPossessPlayer = EAutoReceiveInput::Player0;
     AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
     AIControllerClass = ARobotAIController::StaticClass();
@@ -50,38 +53,32 @@ void ASimulationRobotPawn::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Gather & sort waypoints
+    // show cursor & allow clicking UI
+    if (auto* PC = Cast<APlayerController>(GetController()))
+    {
+        PC->bShowMouseCursor = true;
+        PC->SetInputMode(FInputModeGameAndUI()
+            .SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
+    }
+
+    // gather & sort waypoints
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Waypoints);
     Waypoints.Sort([](const AActor& A, const AActor& B) {
-        const AWaypoint* WaypointA = Cast<AWaypoint>(&A);
-        const AWaypoint* WaypointB = Cast<AWaypoint>(&B);
-        if (WaypointA && WaypointB)
-        {
-            return WaypointA->PatrolOrder < WaypointB->PatrolOrder;
-        }
-        return false;
+        auto* WA = Cast<AWaypoint>(&A);
+        auto* WB = Cast<AWaypoint>(&B);
+        return WA && WB ? WA->PatrolOrder < WB->PatrolOrder : false;
         });
 
-    // Spawn UI panels
+    // spawn UI panels
     if (RobotStatsWidgetClass)
-    {
-        UUserWidget* StatsWidget = CreateWidget<UUserWidget>(GetWorld(), RobotStatsWidgetClass);
-        if (StatsWidget)
-        {
-            StatsWidget->AddToViewport();
-        }
-    }
+        if (auto* W = CreateWidget<UUserWidget>(GetWorld(), RobotStatsWidgetClass))
+            W->AddToViewport();
 
     if (PatrolInfoWidgetClass)
-    {
-        UUserWidget* PatrolWidget = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass);
-        if (PatrolWidget)
-        {
-            PatrolWidget->AddToViewport();
-        }
-    }
+        if (auto* W = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass))
+            W->AddToViewport();
 
-    // Start with speed limit on
+    // enforce initial speed cap
     ToggleSpeedLimit();
 }
 
@@ -89,92 +86,86 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    // Compute speed & push to HUD
-    float SpeedCms = 0.f;
-    if (GetVehicleMovementComponent())
-    {
-        SpeedCms = GetVehicleMovementComponent()->GetForwardSpeed();
-    }
-    float SpeedKmh = SpeedCms * 0.036f;
+    // update SpeedKmh
+    SpeedKmh = 0.f;
+    if (auto* M = GetVehicleMovementComponent())
+        SpeedKmh = M->GetForwardSpeed() * 0.036f;
 
+    // push into UMG
     OnUpdateHUD(
         SpeedKmh,
         bSpeedLimited,
         bLightsOn,
         bIsPatrolMode,
         TreatsDetected,
-        CurrentWPIndex + 1,    // display as 1‑based
+        CurrentWPIndex + 1,
         Waypoints.Num()
     );
 }
 
-void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
 {
-    Super::SetupPlayerInputComponent(PlayerInputComponent);
+    Super::SetupPlayerInputComponent(P);
 
-    // Driving
-    PlayerInputComponent->BindAxis("MoveForward", this, &ASimulationRobotPawn::ThrottleInput);
-    PlayerInputComponent->BindAxis("MoveRight", this, &ASimulationRobotPawn::SteeringInput);
-    PlayerInputComponent->BindAxis("Handbrake", this, &ASimulationRobotPawn::HandbrakeInput);
+    // driving
+    P->BindAxis("MoveForward", this, &ASimulationRobotPawn::ThrottleInput);
+    P->BindAxis("MoveRight", this, &ASimulationRobotPawn::SteeringInput);
+    P->BindAxis("Handbrake", this, &ASimulationRobotPawn::HandbrakeInput);
 
-    // Looking (3rd‑person)
-    PlayerInputComponent->BindAxis("LookUp", this, &ASimulationRobotPawn::LookUp);
-    PlayerInputComponent->BindAxis("Turn", this, &ASimulationRobotPawn::Turn);
+    // rotate camera on LMB + mouse
+    P->BindAction("RotateCamera", IE_Pressed, this, &ASimulationRobotPawn::StartCameraRotate);
+    P->BindAction("RotateCamera", IE_Released, this, &ASimulationRobotPawn::StopCameraRotate);
+    P->BindAxis("LookUp", this, &ASimulationRobotPawn::LookUp);
+    P->BindAxis("Turn", this, &ASimulationRobotPawn::Turn);
 
-    // Actions
-    PlayerInputComponent->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
-    PlayerInputComponent->BindAction("ToggleSpeed", IE_Pressed, this, &ASimulationRobotPawn::ToggleSpeedLimit);
-    PlayerInputComponent->BindAction("ToggleLights", IE_Pressed, this, &ASimulationRobotPawn::ToggleLights);
-    PlayerInputComponent->BindAction("ChangeView", IE_Pressed, this, &ASimulationRobotPawn::ChangeView);
+    // other inputs
+    P->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
+    P->BindAction("ToggleSpeed", IE_Pressed, this, &ASimulationRobotPawn::ToggleSpeedLimit);
+    P->BindAction("ToggleLights", IE_Pressed, this, &ASimulationRobotPawn::ToggleLights);
+    P->BindAction("ChangeView", IE_Pressed, this, &ASimulationRobotPawn::ChangeView);
 }
 
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
+    // clamp throttle if speed‑limit is on and we've hit/exceeded MaxSpeedKmh
+    if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh)
+    {
+        Val = 0.f;
+    }
+
     if (!bIsPatrolMode)
     {
-        UPatrolVehicleMovementComponent* PatrolMovement = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent());
-        if (PatrolMovement)
-        {
-            PatrolMovement->SetThrottleInput(Val);
-        }
+        if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
+            M->SetThrottleInput(Val);
     }
 }
 
 void ASimulationRobotPawn::SteeringInput(float Val)
 {
     if (!bIsPatrolMode)
-    {
-        UPatrolVehicleMovementComponent* PatrolMovement = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent());
-        if (PatrolMovement)
-        {
-            PatrolMovement->SetSteeringInput(Val);
-        }
-    }
+        if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
+            M->SetSteeringInput(Val);
 }
 
 void ASimulationRobotPawn::HandbrakeInput(float Val)
 {
-    UPatrolVehicleMovementComponent* PatrolMovement = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent());
-    if (PatrolMovement)
-    {
-        PatrolMovement->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
-    }
+    if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
+        M->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
 }
+
+void ASimulationRobotPawn::StartCameraRotate() { bRotatingCamera = true; }
+void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
 
 void ASimulationRobotPawn::LookUp(float Val)
 {
-    if (!bUsingAerialView && FMath::Abs(Val) > KINDA_SMALL_NUMBER && SpringArm)
-    {
-        SpringArm->AddRelativeRotation(FRotator(Val * LookUpSpeed * GetWorld()->GetDeltaSeconds(), 0, 0));
-    }
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation(FRotator(Val * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
 }
 
 void ASimulationRobotPawn::Turn(float Val)
 {
-    if (!bUsingAerialView && FMath::Abs(Val) > KINDA_SMALL_NUMBER && SpringArm)
-    {
-        SpringArm->AddRelativeRotation(FRotator(0, Val * TurnSpeed * GetWorld()->GetDeltaSeconds(), 0));
-    }
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation(FRotator(0, Val * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
 }
 
 void ASimulationRobotPawn::ToggleSpeedLimit()
@@ -185,32 +176,23 @@ void ASimulationRobotPawn::ToggleSpeedLimit()
 
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
-    UChaosWheeledVehicleMovementComponent* ChaosMovement = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
-    if (ChaosMovement)
+    // we leave the RPM curve alone now — throttle clamping does the real cap
+    if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
     {
-        ChaosMovement->EngineSetup.MaxRPM = bSpeedLimited ? 500.f : 3000.f;
-        ChaosMovement->EngineSetup.TorqueCurve.EditorCurveData.Reset();
-        ChaosMovement->EngineSetup.TorqueCurve.EditorCurveData.AddKey(0.f, bSpeedLimited ? 150.f : 260.f);
-        ChaosMovement->EngineSetup.TorqueCurve.EditorCurveData.AddKey(bSpeedLimited ? 500.f : 3000.f, bSpeedLimited ? 150.f : 260.f);
+        C->EngineSetup.MaxRPM = bSpeedLimited ? 3000.f : 3000.f;
+        // (optional) you can still tweak torque‐curve here if you like
     }
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
 {
     bIsPatrolMode = !bIsPatrolMode;
+    if (!AICon) AICon = Cast<AAIController>(GetController());
 
-    if (!AICon)
-    {
-        AICon = Cast<AAIController>(GetController());
-    }
-
-    if (bIsPatrolMode && Waypoints.Num() > 0)
+    if (bIsPatrolMode && Waypoints.Num())
     {
         CurrentWPIndex = 0;
-        if (AICon && Waypoints.IsValidIndex(0))
-        {
-            AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
-        }
+        AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
     }
     else if (AICon)
     {
@@ -218,69 +200,54 @@ void ASimulationRobotPawn::TogglePatrolMode()
     }
 }
 
-void ASimulationRobotPawn::BeginMission()
-{
-    if (!bIsPatrolMode)
-    {
-        TogglePatrolMode();
-    }
-}
-
-void ASimulationRobotPawn::EndMission()
-{
-    if (bIsPatrolMode)
-    {
-        TogglePatrolMode();
-    }
-}
+void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
+void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode)  TogglePatrolMode(); }
 
 void ASimulationRobotPawn::ToggleLights()
 {
     bLightsOn = !bLightsOn;
-    if (Headlight)
-    {
-        Headlight->SetVisibility(bLightsOn);
-    }
+    if (Headlight) Headlight->SetVisibility(bLightsOn);
 }
 
 void ASimulationRobotPawn::ChangeView()
 {
     bUsingAerialView = !bUsingAerialView;
-    APlayerController* PC = Cast<APlayerController>(GetController());
-    if (PC)
+
+    auto* PC = Cast<APlayerController>(GetController());
+    if (!PC)
     {
-        AActor* TargetActor = bUsingAerialView ? AerialCamera->GetOwner() : ThirdPersonCamera->GetOwner();
-        if (TargetActor)
-        {
-            PC->SetViewTargetWithBlend(TargetActor, CameraBlendTime);
-        }
+        UE_LOG(LogTemp, Warning, TEXT("ChangeView(): no PlayerController"));
+        return;
     }
+
+    // cameras should now always be valid
+    ThirdPersonCamera->SetActive(!bUsingAerialView);
+    AerialCamera->SetActive(bUsingAerialView);
+
+    FViewTargetTransitionParams Params;
+    Params.BlendTime = CameraBlendTime;
+    Params.BlendFunction = VTBlend_Cubic;
+    PC->SetViewTarget(this, Params);
 }
 
 void ASimulationRobotPawn::PossessedBy(AController* NewController)
 {
     Super::PossessedBy(NewController);
+
     AICon = Cast<AAIController>(NewController);
-    if (AICon)
+    if (AICon && AICon->GetPathFollowingComponent())
     {
-        UPathFollowingComponent* PathFollowing = AICon->GetPathFollowingComponent();
-        if (PathFollowing)
-        {
-            PathFollowing->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
-        }
+        AICon->GetPathFollowingComponent()
+            ->OnRequestFinished
+            .AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
     }
 }
 
-void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result)
+void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
 {
     if (!Result.IsSuccess() || !bIsPatrolMode || !AICon || Waypoints.Num() == 0)
-    {
         return;
-    }
 
     CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
-    if (Waypoints.IsValidIndex(CurrentWPIndex))
-    {
-        AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
-    }
+    AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
 }
