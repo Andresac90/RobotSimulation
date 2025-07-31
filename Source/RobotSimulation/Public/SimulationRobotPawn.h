@@ -69,6 +69,24 @@ public:
         int32 TotalWPCount
     );
 
+    //New Worlflow Aerial View 
+
+    /** Set aerial view on/off */
+    UFUNCTION(BlueprintCallable, Category = "Camera")
+    void SetAerialView(bool bUseAerial);
+
+    /** Check if currently patrolling */
+    UFUNCTION(BlueprintPure, Category = "Patrol")
+    bool IsPatrolling() const { return bIsPatrolMode; }
+
+    /** Set patrol checkpoints from world locations */
+    UFUNCTION(BlueprintCallable, Category = "Patrol")
+    void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
+
+    /** Convert screen position to world location on the ground plane */
+    UFUNCTION(BlueprintCallable, Category = "Utility")
+    bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
+
 protected:
     virtual void BeginPlay() override;
     virtual void PossessedBy(AController* NewController) override;
@@ -152,4 +170,9 @@ private:
 
     UPROPERTY(EditAnywhere, Category = "UI")
     TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
+
+    //New Workflow Aerial View
+
+    /** Dynamic checkpoints for patrol */
+    TArray<FVector> PatrolCheckpoints;
 };

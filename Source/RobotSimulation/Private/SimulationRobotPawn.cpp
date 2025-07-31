@@ -224,19 +224,16 @@ void ASimulationRobotPawn::ApplySpeedLimit()
 
 void ASimulationRobotPawn::TogglePatrolMode()
 {
-    // Flip our flag first
     bIsPatrolMode = !bIsPatrolMode;
 
     if (bIsPatrolMode)
     {
         // → ENTER PATROL MODE
-        // 1) Unpossess the human player
         if (auto* PC = Cast<APlayerController>(GetController()))
         {
             PC->UnPossess();
         }
 
-        // 2) Spawn our AIController if we don't already have one
         if (!AICon)
         {
             FActorSpawnParameters SpawnParams;
@@ -249,17 +246,20 @@ void ASimulationRobotPawn::TogglePatrolMode()
             );
         }
 
-        // 3) Have the AIController possess *this* pawn
         AICon->Possess(this);
 
-        // 4) Hook its OnRequestFinished (if not already)
         if (auto* PF = AICon->GetPathFollowingComponent())
         {
             PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
         }
 
-        // 5) Kick off the path
-        if (Waypoints.Num() > 0)
+        // Use dynamic checkpoints if available, otherwise fall back to waypoints
+        if (PatrolCheckpoints.Num() > 0)
+        {
+            CurrentWPIndex = 0;
+            AICon->MoveToLocation(PatrolCheckpoints[0], AcceptanceRadius);
+        }
+        else if (Waypoints.Num() > 0)
         {
             CurrentWPIndex = 0;
             AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
@@ -268,14 +268,12 @@ void ASimulationRobotPawn::TogglePatrolMode()
     else
     {
         // → EXIT PATROL MODE
-        // 1) Stop & unpossess the AI
         if (AICon)
         {
             AICon->StopMovement();
             AICon->UnPossess();
         }
 
-        // 2) Re‑possess with the PlayerController
         if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
         {
             PC->Possess(this);
@@ -328,9 +326,80 @@ void ASimulationRobotPawn::PossessedBy(AController* NewController)
 
 void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
 {
-    if (!Result.IsSuccess() || !bIsPatrolMode || !AICon || Waypoints.Num() == 0)
+    if (!Result.IsSuccess() || !bIsPatrolMode || !AICon)
         return;
 
-    CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
-    AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
+    // Use dynamic checkpoints if available
+    if (PatrolCheckpoints.Num() > 0)
+    {
+        CurrentWPIndex = (CurrentWPIndex + 1) % PatrolCheckpoints.Num();
+        AICon->MoveToLocation(PatrolCheckpoints[CurrentWPIndex], AcceptanceRadius);
+    }
+    else if (Waypoints.Num() > 0)
+    {
+        CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
+        AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
+    }
+}
+
+//New worflow aerial view
+
+void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
+{
+    bUsingAerialView = bUseAerial;
+
+    if (auto* PC = Cast<APlayerController>(GetController()))
+    {
+        ThirdPersonCamera->SetActive(!bUsingAerialView);
+        AerialCamera->SetActive(bUsingAerialView);
+
+        FViewTargetTransitionParams Params;
+        Params.BlendTime = CameraBlendTime;
+        Params.BlendFunction = VTBlend_Cubic;
+        PC->SetViewTarget(this, Params);
+    }
+}
+
+void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations)
+{
+    PatrolCheckpoints = CheckpointLocations;
+    CurrentWPIndex = 0;
+
+    UE_LOG(LogTemp, Log, TEXT("Set %d patrol checkpoints"), PatrolCheckpoints.Num());
+}
+
+bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation)
+{
+    if (auto* PC = Cast<APlayerController>(GetController()))
+    {
+        FVector WorldDirection;
+        if (PC->DeprojectScreenPositionToWorld(ScreenPosition.X, ScreenPosition.Y, WorldLocation, WorldDirection))
+        {
+            // Perform a line trace to find the ground
+            FHitResult HitResult;
+            FVector Start = WorldLocation;
+            FVector End = Start + (WorldDirection * 10000.0f); // Trace far into the distance
+
+            FCollisionQueryParams QueryParams;
+            QueryParams.bTraceComplex = false;
+            QueryParams.AddIgnoredActor(this);
+
+            if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_WorldStatic, QueryParams))
+            {
+                WorldLocation = HitResult.Location;
+                return true;
+            }
+            else
+            {
+                // If no hit, project onto a ground plane (Z=0)
+                float t = -Start.Z / WorldDirection.Z;
+                if (t > 0)
+                {
+                    WorldLocation = Start + (WorldDirection * t);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
