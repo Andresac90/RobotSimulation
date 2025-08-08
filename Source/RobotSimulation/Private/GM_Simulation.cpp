@@ -9,7 +9,7 @@ AGM_Simulation::AGM_Simulation()
 {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Set default pawn class to our robot
+    // Spawn the robot pawn as the default player pawn
     DefaultPawnClass = ASimulationRobotPawn::StaticClass();
 }
 
@@ -17,9 +17,7 @@ void AGM_Simulation::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Find the robot pawn
     RobotPawn = Cast<ASimulationRobotPawn>(UGameplayStatics::GetPlayerPawn(GetWorld(), 0));
-
     if (!RobotPawn)
     {
         UE_LOG(LogTemp, Error, TEXT("GM_Simulation: Could not find SimulationRobotPawn!"));
@@ -106,38 +104,37 @@ void AGM_Simulation::RemoveLastCheckpoint()
 
 void AGM_Simulation::SetupPlanningMode()
 {
-    if (!RobotPawn)
-        return;
+    if (!RobotPawn) return;
 
-    // Make sure robot is not in patrol mode
+    // Ensure robot is not patrolling and give the player the pawn back
     if (RobotPawn->IsPatrolling())
     {
         RobotPawn->EndMission();
     }
 
-    // Switch to aerial camera
+    // Switch to aerial camera while PC still possesses the pawn
     RobotPawn->SetAerialView(true);
 
     // Show map overview widget
     if (MapOverviewWidgetClass && !MapOverviewWidget)
     {
         MapOverviewWidget = CreateWidget<UUserWidget>(GetWorld(), MapOverviewWidgetClass);
-        if (MapOverviewWidget)
-        {
-            MapOverviewWidget->AddToViewport();
-        }
+        if (MapOverviewWidget) MapOverviewWidget->AddToViewport(10);
     }
     else if (MapOverviewWidget)
     {
         MapOverviewWidget->SetVisibility(ESlateVisibility::Visible);
     }
 
+    // Hide simulation HUDs if present
+    if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Hidden);
+    if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Hidden);
+
     // Enable mouse cursor and UI input
     if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
     {
         PC->bShowMouseCursor = true;
-        PC->SetInputMode(FInputModeGameAndUI()
-            .SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
+        PC->SetInputMode(FInputModeGameAndUI().SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
     }
 
     UE_LOG(LogTemp, Log, TEXT("Entered planning mode"));
@@ -145,25 +142,33 @@ void AGM_Simulation::SetupPlanningMode()
 
 void AGM_Simulation::SetupSimulationMode()
 {
-    if (!RobotPawn)
-        return;
+    if (!RobotPawn) return;
 
     // Hide map overview widget
-    if (MapOverviewWidget)
-    {
-        MapOverviewWidget->SetVisibility(ESlateVisibility::Hidden);
-    }
+    if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Hidden);
 
-    // Switch to third person camera
+    // Smoothly blend to third-person camera while still possessed by the player
     RobotPawn->SetAerialView(false);
 
-    // Set up checkpoints for patrol
+    // Set up checkpoints for patrol and start the mission (AI takes over)
     RobotPawn->SetPatrolCheckpoints(CheckpointLocations);
-
-    // Start the mission
     RobotPawn->BeginMission();
 
-    // Set input mode for gameplay
+    // Bring up simulation HUDs (create on demand)
+    if (!RobotStatsWidget && RobotStatsWidgetClass)
+    {
+        RobotStatsWidget = CreateWidget<UUserWidget>(GetWorld(), RobotStatsWidgetClass);
+        if (RobotStatsWidget) RobotStatsWidget->AddToViewport(5);
+    }
+    if (!PatrolInfoWidget && PatrolInfoWidgetClass)
+    {
+        PatrolInfoWidget = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass);
+        if (PatrolInfoWidget) PatrolInfoWidget->AddToViewport(5);
+    }
+    if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Visible);
+    if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Visible);
+
+    // Gameplay input (mouse not needed now)
     if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
     {
         PC->bShowMouseCursor = false;

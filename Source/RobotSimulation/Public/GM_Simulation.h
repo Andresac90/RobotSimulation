@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
-#include "Engine/World.h"
 #include "GM_Simulation.generated.h"
 
 class ASimulationRobotPawn;
@@ -44,9 +43,12 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
     TSubclassOf<UUserWidget> MapOverviewWidgetClass;
 
-    /** Current map overview widget instance */
-    UPROPERTY(BlueprintReadOnly, Category = "UI")
-    UUserWidget* MapOverviewWidget = nullptr;
+    /** Robot HUDs (shown during simulation) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+    TSubclassOf<UUserWidget> RobotStatsWidgetClass;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+    TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
 
     /** Start the simulation with current checkpoints */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -75,4 +77,14 @@ public:
 private:
     void SetupPlanningMode();
     void SetupSimulationMode();
+
+    /** Current widget instances */
+    UPROPERTY()
+    UUserWidget* MapOverviewWidget = nullptr;
+
+    UPROPERTY()
+    UUserWidget* RobotStatsWidget = nullptr;
+
+    UPROPERTY()
+    UUserWidget* PatrolInfoWidget = nullptr;
 };

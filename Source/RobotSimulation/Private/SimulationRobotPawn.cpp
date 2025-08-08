@@ -1,10 +1,7 @@
-﻿// SimulationRobotPawn.cpp
-
-#include "SimulationRobotPawn.h"
+﻿#include "SimulationRobotPawn.h"
 #include "PatrolVehicleMovementComponent.h"
 #include "RobotAIController.h"
 #include "Kismet/GameplayStatics.h"
-#include "Blueprint/UserWidget.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
@@ -14,9 +11,8 @@
 #include "Camera/PlayerCameraManager.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
-    : Super(ObjInit
-        .SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(
-            AWheeledVehiclePawn::VehicleMovementComponentName))
+    : Super(ObjInit.SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(
+        AWheeledVehiclePawn::VehicleMovementComponentName))
 {
     PrimaryActorTick.bCanEverTick = true;
 
@@ -55,74 +51,24 @@ void ASimulationRobotPawn::BeginPlay()
 {
     Super::BeginPlay();
 
-    // show cursor & allow clicking UI
+    // show cursor & allow clicking UI (planning)
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
         PC->bShowMouseCursor = true;
-        PC->SetInputMode(
-            FInputModeGameAndUI().
-            SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock)
-        );
+        PC->SetInputMode(FInputModeGameAndUI().SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
     }
 
-    // gather & sort waypoints
+    // Optional fallback: gather & sort level waypoints if used
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Waypoints);
-    Waypoints.Sort([](const AActor& A, const AActor& B) {
-        auto* WA = Cast<AWaypoint>(&A);
-        auto* WB = Cast<AWaypoint>(&B);
-        return WA && WB
-            ? WA->PatrolOrder < WB->PatrolOrder
-            : false;
+    Waypoints.Sort([](const AActor& A, const AActor& B)
+        {
+            const AWaypoint* WA = Cast<AWaypoint>(&A);
+            const AWaypoint* WB = Cast<AWaypoint>(&B);
+            return (WA && WB) ? WA->PatrolOrder < WB->PatrolOrder : false;
         });
 
-    // spawn UI panels
-    if (RobotStatsWidgetClass)
-        if (auto* W = CreateWidget<UUserWidget>(GetWorld(), RobotStatsWidgetClass))
-            W->AddToViewport();
-
-    if (PatrolInfoWidgetClass)
-        if (auto* W = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass))
-            W->AddToViewport();
-
-    // ——— CAMERA FALLBACK FINDER ———
-    TArray<UCameraComponent*> FoundCams;
-    GetComponents<UCameraComponent>(FoundCams);
-
-    if (!ThirdPersonCamera)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("ThirdPersonCamera was null, attempting fallback"));
-        for (auto* Cam : FoundCams)
-            if (Cam->ComponentHasTag(FName("ThirdPerson")))
-            {
-                ThirdPersonCamera = Cam;
-                break;
-            }
-        if (!ThirdPersonCamera && FoundCams.Num() > 0)
-            ThirdPersonCamera = FoundCams[0];
-    }
-
-    if (!AerialCamera)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("AerialCamera was null, attempting fallback"));
-        for (auto* Cam : FoundCams)
-            if (Cam->ComponentHasTag(FName("Aerial")))
-            {
-                AerialCamera = Cam;
-                break;
-            }
-        if (!AerialCamera && FoundCams.Num() > 1)
-            AerialCamera = FoundCams[1];
-    }
-
-    if (!ThirdPersonCamera || !AerialCamera)
-    {
-        UE_LOG(LogTemp, Error,
-            TEXT("Camera fallback still failed! "
-                "Make sure your BP Pawn has subobjects named/s tagged correctly."));
-    }
-
-    // enforce initial speed cap
-    ToggleSpeedLimit();
+    // Enforce initial speed cap ON (your default was off)
+    if (!bSpeedLimited) ToggleSpeedLimit();
 }
 
 void ASimulationRobotPawn::Tick(float DeltaTime)
@@ -132,17 +78,22 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
     // update SpeedKmh
     SpeedKmh = 0.f;
     if (auto* M = GetVehicleMovementComponent())
+    {
         SpeedKmh = M->GetForwardSpeed() * 0.036f;
+    }
 
-    // push into UMG
+    // pick correct total count (dynamic checkpoints preferred)
+    const int32 Total = (PatrolCheckpoints.Num() > 0) ? PatrolCheckpoints.Num() : Waypoints.Num();
+
+    // push into UMG (blueprint event)
     OnUpdateHUD(
         SpeedKmh,
         bSpeedLimited,
         bLightsOn,
         bIsPatrolMode,
         TreatsDetected,
-        CurrentWPIndex + 1,
-        Waypoints.Num()
+        Total > 0 ? (CurrentWPIndex + 1) : 0,
+        Total
     );
 }
 
@@ -170,9 +121,8 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
 
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
-    // clamp throttle if speed‑limit is on and we've hit/exceeded MaxSpeedKmh
-    if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh)
-        Val = 0.f;
+    // clamp throttle if speed-limit is on and we've hit/exceeded MaxSpeedKmh
+    if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh) Val = 0.f;
 
     if (!bIsPatrolMode)
         if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
@@ -198,15 +148,17 @@ void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
 void ASimulationRobotPawn::LookUp(float Val)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(
-            FRotator(Val * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
+    {
+        SpringArm->AddLocalRotation(FRotator(Val * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
+    }
 }
 
 void ASimulationRobotPawn::Turn(float Val)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(Val) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(
-            FRotator(0, Val * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
+    {
+        SpringArm->AddLocalRotation(FRotator(0, Val * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
+    }
 }
 
 void ASimulationRobotPawn::ToggleSpeedLimit()
@@ -217,9 +169,11 @@ void ASimulationRobotPawn::ToggleSpeedLimit()
 
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
-    // We clamp throttle in ThrottleInput() so MaxRPM stays high enough for responsiveness
+    // We clamp throttle in ThrottleInput() so MaxRPM stays snappy
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+    {
         C->EngineSetup.MaxRPM = 3000.f;
+    }
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
@@ -228,7 +182,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
 
     if (bIsPatrolMode)
     {
-        // → ENTER PATROL MODE
+        // → ENTER PATROL MODE (AI possesses)
         if (auto* PC = Cast<APlayerController>(GetController()))
         {
             PC->UnPossess();
@@ -236,21 +190,19 @@ void ASimulationRobotPawn::TogglePatrolMode()
 
         if (!AICon)
         {
-            FActorSpawnParameters SpawnParams;
-            SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+            // Spawn an AI controller (could also call SpawnDefaultController())
+            FActorSpawnParameters Params;
+            Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
             AICon = GetWorld()->SpawnActor<ARobotAIController>(
                 ARobotAIController::StaticClass(),
-                GetActorLocation(),
-                GetActorRotation(),
-                SpawnParams
-            );
+                GetActorLocation(), GetActorRotation(), Params);
         }
 
-        AICon->Possess(this);
+        if (AICon) AICon->Possess(this);
 
-        if (auto* PF = AICon->GetPathFollowingComponent())
+        if (AICon && AICon->GetPathFollowingComponent())
         {
-            PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
+            AICon->GetPathFollowingComponent()->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
         }
 
         // Use dynamic checkpoints if available, otherwise fall back to waypoints
@@ -267,7 +219,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
     }
     else
     {
-        // → EXIT PATROL MODE
+        // → EXIT PATROL MODE (Player possesses)
         if (AICon)
         {
             AICon->StopMovement();
@@ -281,14 +233,20 @@ void ASimulationRobotPawn::TogglePatrolMode()
     }
 }
 
-void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
-void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode)  TogglePatrolMode(); }
+void ASimulationRobotPawn::BeginMission()
+{
+    if (!bIsPatrolMode) TogglePatrolMode();
+}
+
+void ASimulationRobotPawn::EndMission()
+{
+    if (bIsPatrolMode) TogglePatrolMode();
+}
 
 void ASimulationRobotPawn::ToggleLights()
 {
     bLightsOn = !bLightsOn;
-    if (Headlight)
-        Headlight->SetVisibility(bLightsOn);
+    if (Headlight) Headlight->SetVisibility(bLightsOn);
 }
 
 void ASimulationRobotPawn::ChangeView()
@@ -297,8 +255,8 @@ void ASimulationRobotPawn::ChangeView()
 
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
-        ThirdPersonCamera->SetActive(!bUsingAerialView);
-        AerialCamera->SetActive(bUsingAerialView);
+        if (ThirdPersonCamera) ThirdPersonCamera->SetActive(!bUsingAerialView);
+        if (AerialCamera)      AerialCamera->SetActive(bUsingAerialView);
 
         FViewTargetTransitionParams Params;
         Params.BlendTime = CameraBlendTime;
@@ -318,18 +276,14 @@ void ASimulationRobotPawn::PossessedBy(AController* NewController)
     AICon = Cast<AAIController>(NewController);
     if (AICon && AICon->GetPathFollowingComponent())
     {
-        AICon->GetPathFollowingComponent()
-            ->OnRequestFinished
-            .AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
+        AICon->GetPathFollowingComponent()->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
     }
 }
 
 void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
 {
-    if (!Result.IsSuccess() || !bIsPatrolMode || !AICon)
-        return;
+    if (!Result.IsSuccess() || !bIsPatrolMode || !AICon) return;
 
-    // Use dynamic checkpoints if available
     if (PatrolCheckpoints.Num() > 0)
     {
         CurrentWPIndex = (CurrentWPIndex + 1) % PatrolCheckpoints.Num();
@@ -342,7 +296,7 @@ void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingRes
     }
 }
 
-//New worflow aerial view
+// ------- New workflow helpers -------
 
 void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 {
@@ -350,8 +304,8 @@ void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
-        ThirdPersonCamera->SetActive(!bUsingAerialView);
-        AerialCamera->SetActive(bUsingAerialView);
+        if (ThirdPersonCamera) ThirdPersonCamera->SetActive(!bUsingAerialView);
+        if (AerialCamera)      AerialCamera->SetActive(bUsingAerialView);
 
         FViewTargetTransitionParams Params;
         Params.BlendTime = CameraBlendTime;
@@ -375,27 +329,28 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPosition, FVect
         FVector WorldDirection;
         if (PC->DeprojectScreenPositionToWorld(ScreenPosition.X, ScreenPosition.Y, WorldLocation, WorldDirection))
         {
-            // Perform a line trace to find the ground
-            FHitResult HitResult;
-            FVector Start = WorldLocation;
-            FVector End = Start + (WorldDirection * 10000.0f); // Trace far into the distance
+            // Line trace to ground/geometry
+            FHitResult Hit;
+            const FVector Start = WorldLocation;
+            const FVector End = Start + (WorldDirection * 100000.0f);
 
-            FCollisionQueryParams QueryParams;
-            QueryParams.bTraceComplex = false;
-            QueryParams.AddIgnoredActor(this);
+            FCollisionQueryParams Params(SCENE_QUERY_STAT(ScreenToWorld), /*bTraceComplex=*/false);
+            Params.AddIgnoredActor(this);
 
-            if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_WorldStatic, QueryParams))
+            if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
             {
-                WorldLocation = HitResult.Location;
+                WorldLocation = Hit.Location;
                 return true;
             }
-            else
+
+            // Fallback: plane Z=0
+            const float DZ = WorldDirection.Z;
+            if (FMath::Abs(DZ) > SMALL_NUMBER)
             {
-                // If no hit, project onto a ground plane (Z=0)
-                float t = -Start.Z / WorldDirection.Z;
-                if (t > 0)
+                const float T = -Start.Z / DZ;
+                if (T > 0.f)
                 {
-                    WorldLocation = Start + (WorldDirection * t);
+                    WorldLocation = Start + (WorldDirection * T);
                     return true;
                 }
             }

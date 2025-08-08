@@ -1,6 +1,4 @@
-﻿// SimulationRobotPawn.h
-
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "WheeledVehiclePawn.h"
@@ -9,7 +7,6 @@
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/SpotLightComponent.h"
-#include "Blueprint/UserWidget.h"
 #include "SimulationRobotPawn.generated.h"
 
 class AWaypoint;
@@ -45,7 +42,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Mission")
     void EndMission();
 
-    /** Smoothly switch between 3rd‑person & aerial views */
+    /** Smoothly switch between 3rd-person & aerial views */
     UFUNCTION(BlueprintCallable, Category = "Camera")
     void ChangeView();
 
@@ -53,7 +50,7 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Stats")
     float SpeedKmh = 0.f;
 
-    /** If speed‑limit is on, cap throttle at this (km/h) */
+    /** If speed-limit is on, cap throttle at this (km/h) */
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0"))
     float MaxSpeedKmh = 5.f;
 
@@ -69,7 +66,7 @@ public:
         int32 TotalWPCount
     );
 
-    //New Worlflow Aerial View 
+    // ------- New workflow: aerial planning / dynamic checkpoints --------
 
     /** Set aerial view on/off */
     UFUNCTION(BlueprintCallable, Category = "Camera")
@@ -97,11 +94,11 @@ protected:
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
 
-    // Look (3rd‑person)
+    // Look (3rd-person)
     void LookUp(float Val);
     void Turn(float Val);
 
-    // LMB‑drag rotate camera
+    // LMB-drag rotate camera
     void StartCameraRotate();
     void StopCameraRotate();
 
@@ -119,7 +116,10 @@ private:
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
     int32 CurrentWPIndex = 0;
 
-    TArray<AActor*> Waypoints;
+    /** Static level waypoints (optional fallback) */
+    UPROPERTY() // keep a reference so GC doesn’t collect
+        TArray<AActor*> Waypoints;
+
     UPROPERTY()
     AAIController* AICon = nullptr;
 
@@ -127,7 +127,6 @@ private:
     int32 TreatsDetected = 0;
 
     // — Camera & view —
-    /** Editable in BP so you can reposition at will */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     USpringArmComponent* SpringArm;
 
@@ -164,15 +163,6 @@ private:
     UPROPERTY(EditAnywhere, Category = "Patrol")
     float AcceptanceRadius = 200.f;
 
-    // — UI widget classes —
-    UPROPERTY(EditAnywhere, Category = "UI")
-    TSubclassOf<UUserWidget> RobotStatsWidgetClass;
-
-    UPROPERTY(EditAnywhere, Category = "UI")
-    TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
-
-    //New Workflow Aerial View
-
-    /** Dynamic checkpoints for patrol */
+    /** Dynamic checkpoints for patrol (from UI) */
     TArray<FVector> PatrolCheckpoints;
 };
