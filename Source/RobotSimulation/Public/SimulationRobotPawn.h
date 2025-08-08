@@ -19,114 +19,61 @@ class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
 
 public:
     ASimulationRobotPawn(const FObjectInitializer& ObjInit);
-
     virtual void Tick(float DeltaTime) override;
 
-    /** Toggle engine speed cap on/off */
-    UFUNCTION(BlueprintCallable, Category = "Control")
-    void ToggleSpeedLimit();
+    UFUNCTION(BlueprintCallable, Category = "Control") void ToggleSpeedLimit();
+    UFUNCTION(BlueprintCallable, Category = "Patrol")  void TogglePatrolMode();
+    UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();
+    UFUNCTION(BlueprintCallable, Category = "Mission") void BeginMission();
+    UFUNCTION(BlueprintCallable, Category = "Mission") void EndMission();
+    UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();
 
-    /** Toggle AI/manual patrol */
-    UFUNCTION(BlueprintCallable, Category = "Patrol")
-    void TogglePatrolMode();
+    UPROPERTY(BlueprintReadOnly, Category = "Stats") float SpeedKmh = 0.f;
+    UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0")) float MaxSpeedKmh = 5.f;
 
-    /** Toggle headlights on/off */
-    UFUNCTION(BlueprintCallable, Category = "Lights")
-    void ToggleLights();
-
-    /** Begin mission (starts patrol) */
-    UFUNCTION(BlueprintCallable, Category = "Mission")
-    void BeginMission();
-
-    /** End mission (stops patrol) */
-    UFUNCTION(BlueprintCallable, Category = "Mission")
-    void EndMission();
-
-    /** Smoothly switch between 3rd-person & aerial views */
-    UFUNCTION(BlueprintCallable, Category = "Camera")
-    void ChangeView();
-
-    /** Current forward speed in km/h (updated each Tick) */
-    UPROPERTY(BlueprintReadOnly, Category = "Stats")
-    float SpeedKmh = 0.f;
-
-    /** If speed-limit is on, cap throttle at this (km/h) */
-    UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0"))
-    float MaxSpeedKmh = 5.f;
-
-    /** Push fresh stats/UI each frame */
     UFUNCTION(BlueprintImplementableEvent, Category = "UI")
-    void OnUpdateHUD(
-        float InSpeedKmh,
-        bool  bSpeedLimitedStatus,
-        bool  bLightsOnStatus,
-        bool  bPatrolModeStatus,
-        int32 TreatsCount,
-        int32 CurrentWPDisplayIndex,
-        int32 TotalWPCount
-    );
+    void OnUpdateHUD(float InSpeedKmh, bool bSpeedLimitedStatus, bool bLightsOnStatus,
+        bool bPatrolModeStatus, int32 TreatsCount, int32 CurrentWPDisplayIndex, int32 TotalWPCount);
 
-    // ------- New workflow: aerial planning / dynamic checkpoints --------
-
-    /** Set aerial view on/off */
-    UFUNCTION(BlueprintCallable, Category = "Camera")
-    void SetAerialView(bool bUseAerial);
-
-    /** Check if currently patrolling */
-    UFUNCTION(BlueprintPure, Category = "Patrol")
-    bool IsPatrolling() const { return bIsPatrolMode; }
-
-    /** Set patrol checkpoints from world locations */
-    UFUNCTION(BlueprintCallable, Category = "Patrol")
-    void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
-
-    /** Convert screen position to world location on the ground plane */
-    UFUNCTION(BlueprintCallable, Category = "Utility")
-    bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
+    // planning helpers
+    UFUNCTION(BlueprintCallable, Category = "Camera") void SetAerialView(bool bUseAerial);
+    UFUNCTION(BlueprintPure, Category = "Patrol") bool IsPatrolling() const { return bIsPatrolMode; }
+    UFUNCTION(BlueprintCallable, Category = "Patrol") void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
+    UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
 protected:
     virtual void BeginPlay() override;
     virtual void PossessedBy(AController* NewController) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
-    // Driving
     void ThrottleInput(float Val);
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
-
-    // Look (3rd-person)
     void LookUp(float Val);
     void Turn(float Val);
-
-    // LMB-drag rotate camera
     void StartCameraRotate();
     void StopCameraRotate();
 
-    // AI path callback
     void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
-
-    // apply the speed cap property
     void ApplySpeedLimit();
 
+    void AdvanceToNextPatrolTarget(); // NEW
+
 private:
-    // — Patrol state —
+    // patrol
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
     bool bIsPatrolMode = false;
 
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
     int32 CurrentWPIndex = 0;
 
-    /** Static level waypoints (optional fallback) */
-    UPROPERTY() // keep a reference so GC doesn’t collect
-        TArray<AActor*> Waypoints;
-
-    UPROPERTY()
-    AAIController* AICon = nullptr;
+    UPROPERTY() TArray<AActor*> Waypoints;
+    UPROPERTY() AAIController* AICon = nullptr;
 
     UPROPERTY(BlueprintReadOnly, Category = "Stats", meta = (AllowPrivateAccess = "true"))
     int32 TreatsDetected = 0;
 
-    // — Camera & view —
+    // camera
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     USpringArmComponent* SpringArm;
 
@@ -148,21 +95,19 @@ private:
     bool bUsingAerialView = false;
     bool bRotatingCamera = false;
 
-    // — Lights —
+    // lights/speed
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* Headlight;
 
     UPROPERTY(BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     bool bLightsOn = true;
 
-    // — Speed limit —
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true"))
     bool bSpeedLimited = false;
 
-    // — Patrol settings —
     UPROPERTY(EditAnywhere, Category = "Patrol")
     float AcceptanceRadius = 200.f;
 
-    /** Dynamic checkpoints for patrol (from UI) */
+    // dynamic checkpoints
     TArray<FVector> PatrolCheckpoints;
 };

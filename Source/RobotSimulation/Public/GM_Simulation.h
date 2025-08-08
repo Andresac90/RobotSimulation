@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
@@ -10,8 +10,8 @@ class UUserWidget;
 UENUM(BlueprintType)
 enum class ESimulationState : uint8
 {
-    Planning,    // Aerial view, placing checkpoints
-    Simulating,  // Robot view, following patrol
+    Planning,
+    Simulating,
     Paused
 };
 
@@ -39,16 +39,19 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Simulation")
     TArray<FVector> CheckpointLocations;
 
-    /** Map overview widget class */
+    // —— UI classes (assign in World Settings → GameMode Override) ——
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
     TSubclassOf<UUserWidget> MapOverviewWidgetClass;
 
-    /** Robot HUDs (shown during simulation) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
     TSubclassOf<UUserWidget> RobotStatsWidgetClass;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
     TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
+
+    // —— Option C: CameraActor in the level with this tag will be used for planning view ——
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
+    FName PlanningViewTag = TEXT("PlanningView");
 
     /** Start the simulation with current checkpoints */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -77,14 +80,15 @@ public:
 private:
     void SetupPlanningMode();
     void SetupSimulationMode();
+    void ResolvePlanningViewActor();
 
-    /** Current widget instances */
-    UPROPERTY()
-    UUserWidget* MapOverviewWidget = nullptr;
+    // widget instances
+    UPROPERTY() UUserWidget* MapOverviewWidget = nullptr;
+    UPROPERTY() UUserWidget* RobotStatsWidget = nullptr;
+    UPROPERTY() UUserWidget* PatrolInfoWidget = nullptr;
 
-    UPROPERTY()
-    UUserWidget* RobotStatsWidget = nullptr;
+    // resolved planning camera at runtime (CameraActor with PlanningViewTag)
+    UPROPERTY() AActor* PlanningViewActor = nullptr;
 
-    UPROPERTY()
-    UUserWidget* PatrolInfoWidget = nullptr;
+    void LogScreen(const FString& Msg, FColor Col = FColor::Yellow, float Time = 2.f) const;
 };

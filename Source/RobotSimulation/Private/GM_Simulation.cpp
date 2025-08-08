@@ -1,15 +1,15 @@
-#include "GM_Simulation.h"
+﻿#include "GM_Simulation.h"
 #include "SimulationRobotPawn.h"
-#include "Kismet/GameplayStatics.h"
 #include "Blueprint/UserWidget.h"
+#include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
+#include "Camera/CameraActor.h"
 #include "Engine/Engine.h"
+#include "TimerManager.h"
 
 AGM_Simulation::AGM_Simulation()
 {
     PrimaryActorTick.bCanEverTick = false;
-
-    // Spawn the robot pawn as the default player pawn
     DefaultPawnClass = ASimulationRobotPawn::StaticClass();
 }
 
@@ -18,31 +18,65 @@ void AGM_Simulation::BeginPlay()
     Super::BeginPlay();
 
     RobotPawn = Cast<ASimulationRobotPawn>(UGameplayStatics::GetPlayerPawn(GetWorld(), 0));
-    if (!RobotPawn)
+    if (!IsValid(RobotPawn))
     {
-        UE_LOG(LogTemp, Error, TEXT("GM_Simulation: Could not find SimulationRobotPawn!"));
+        UE_LOG(LogTemp, Error, TEXT("GM_Simulation: SimulationRobotPawn not found!"));
+        LogScreen(TEXT("No SimulationRobotPawn found."), FColor::Red, 5.f);
         return;
     }
 
-    // Start in planning mode
+    ResolvePlanningViewActor();
     SetupPlanningMode();
+}
+
+void AGM_Simulation::ResolvePlanningViewActor()
+{
+    PlanningViewActor = nullptr;
+
+    if (!PlanningViewTag.IsNone())
+    {
+        TArray<AActor*> Tagged;
+        UGameplayStatics::GetAllActorsWithTag(GetWorld(), PlanningViewTag, Tagged);
+        for (AActor* A : Tagged)
+        {
+            if (A && A->IsA(ACameraActor::StaticClass()))
+            {
+                PlanningViewActor = A;
+                break;
+            }
+        }
+    }
+
+    if (!PlanningViewActor)
+    {
+        TArray<AActor*> Cams;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), ACameraActor::StaticClass(), Cams);
+        if (Cams.Num() > 0)
+        {
+            PlanningViewActor = Cams[0];
+            UE_LOG(LogTemp, Warning, TEXT("Planning camera fallback used: %s"),
+                *PlanningViewActor->GetName());
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("No CameraActor found for planning. Will use pawn aerial cam."));
+        }
+    }
 }
 
 void AGM_Simulation::StartSimulation()
 {
     if (CurrentState == ESimulationState::Simulating)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Simulation already running!"));
+        LogScreen(TEXT("Simulation already running."));
         return;
     }
 
     if (CheckpointLocations.Num() == 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("No checkpoints set! Cannot start simulation."));
+        LogScreen(TEXT("Place at least one checkpoint before starting."), FColor::Red, 3.f);
         return;
     }
-
-    UE_LOG(LogTemp, Log, TEXT("Starting simulation with %d checkpoints"), CheckpointLocations.Num());
 
     CurrentState = ESimulationState::Simulating;
     SetupSimulationMode();
@@ -52,11 +86,9 @@ void AGM_Simulation::StopSimulation()
 {
     if (CurrentState == ESimulationState::Planning)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Already in planning mode!"));
+        LogScreen(TEXT("Already in planning mode."));
         return;
     }
-
-    UE_LOG(LogTemp, Log, TEXT("Stopping simulation, returning to planning mode"));
 
     CurrentState = ESimulationState::Planning;
     SetupPlanningMode();
@@ -66,114 +98,112 @@ void AGM_Simulation::AddCheckpoint(FVector WorldLocation)
 {
     if (CurrentState != ESimulationState::Planning)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Cannot add checkpoints while simulation is running!"));
+        LogScreen(TEXT("Can't add checkpoints while running."), FColor::Red);
         return;
     }
-
     CheckpointLocations.Add(WorldLocation);
-    UE_LOG(LogTemp, Log, TEXT("Added checkpoint at: %s (Total: %d)"),
-        *WorldLocation.ToString(), CheckpointLocations.Num());
 }
 
 void AGM_Simulation::ClearCheckpoints()
 {
-    if (CurrentState != ESimulationState::Planning)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Cannot clear checkpoints while simulation is running!"));
-        return;
-    }
-
+    if (CurrentState != ESimulationState::Planning) return;
     CheckpointLocations.Empty();
-    UE_LOG(LogTemp, Log, TEXT("Cleared all checkpoints"));
 }
 
 void AGM_Simulation::RemoveLastCheckpoint()
 {
-    if (CurrentState != ESimulationState::Planning)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Cannot remove checkpoints while simulation is running!"));
-        return;
-    }
-
+    if (CurrentState != ESimulationState::Planning) return;
     if (CheckpointLocations.Num() > 0)
-    {
         CheckpointLocations.RemoveAt(CheckpointLocations.Num() - 1);
-        UE_LOG(LogTemp, Log, TEXT("Removed last checkpoint (Remaining: %d)"), CheckpointLocations.Num());
-    }
 }
 
 void AGM_Simulation::SetupPlanningMode()
 {
-    if (!RobotPawn) return;
+    if (!IsValid(RobotPawn)) return;
 
-    // Ensure robot is not patrolling and give the player the pawn back
-    if (RobotPawn->IsPatrolling())
-    {
-        RobotPawn->EndMission();
-    }
+    // robot returns to player & stops patrolling
+    if (RobotPawn->IsPatrolling()) RobotPawn->EndMission();
 
-    // Switch to aerial camera while PC still possesses the pawn
-    RobotPawn->SetAerialView(true);
-
-    // Show map overview widget
-    if (MapOverviewWidgetClass && !MapOverviewWidget)
-    {
-        MapOverviewWidget = CreateWidget<UUserWidget>(GetWorld(), MapOverviewWidgetClass);
-        if (MapOverviewWidget) MapOverviewWidget->AddToViewport(10);
-    }
-    else if (MapOverviewWidget)
-    {
-        MapOverviewWidget->SetVisibility(ESlateVisibility::Visible);
-    }
-
-    // Hide simulation HUDs if present
-    if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Hidden);
-    if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Hidden);
-
-    // Enable mouse cursor and UI input
-    if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
+    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+    if (PC)
     {
         PC->bShowMouseCursor = true;
         PC->SetInputMode(FInputModeGameAndUI().SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
+
+        ResolvePlanningViewActor();
+        if (PlanningViewActor)
+        {
+            FViewTargetTransitionParams P; P.BlendTime = 1.0f; P.BlendFunction = VTBlend_Cubic;
+            PC->SetViewTargetWithBlend(PlanningViewActor, P.BlendTime, P.BlendFunction);
+        }
+        else
+        {
+            RobotPawn->SetAerialView(true); // fallback to pawn aerial cam
+        }
     }
+
+    // show planning widget (use owning player overload)
+    if (!MapOverviewWidget && MapOverviewWidgetClass && PC)
+    {
+        MapOverviewWidget = CreateWidget<UUserWidget>(PC, MapOverviewWidgetClass);
+        if (MapOverviewWidget) MapOverviewWidget->AddToViewport(10);
+    }
+    if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Visible);
+
+    // hide sim HUDs
+    if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Hidden);
+    if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Hidden);
 
     UE_LOG(LogTemp, Log, TEXT("Entered planning mode"));
 }
 
 void AGM_Simulation::SetupSimulationMode()
 {
-    if (!RobotPawn) return;
+    // Hardened guards (this is where your crash was reported)
+    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+    if (!IsValid(RobotPawn) || !IsValid(PC))
+    {
+        UE_LOG(LogTemp, Error, TEXT("SetupSimulationMode: RobotPawn or PlayerController invalid"));
+        return;
+    }
 
-    // Hide map overview widget
+    // hide planning UI safely
     if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Hidden);
 
-    // Smoothly blend to third-person camera while still possessed by the player
-    RobotPawn->SetAerialView(false);
-
-    // Set up checkpoints for patrol and start the mission (AI takes over)
-    RobotPawn->SetPatrolCheckpoints(CheckpointLocations);
-    RobotPawn->BeginMission();
-
-    // Bring up simulation HUDs (create on demand)
-    if (!RobotStatsWidget && RobotStatsWidgetClass)
+    // create/show sim HUDs (owning player overload prevents null crashes)
+    if (!RobotStatsWidget && RobotStatsWidgetClass && PC)
     {
-        RobotStatsWidget = CreateWidget<UUserWidget>(GetWorld(), RobotStatsWidgetClass);
+        RobotStatsWidget = CreateWidget<UUserWidget>(PC, RobotStatsWidgetClass);
         if (RobotStatsWidget) RobotStatsWidget->AddToViewport(5);
     }
-    if (!PatrolInfoWidget && PatrolInfoWidgetClass)
+    if (!PatrolInfoWidget && PatrolInfoWidgetClass && PC)
     {
-        PatrolInfoWidget = CreateWidget<UUserWidget>(GetWorld(), PatrolInfoWidgetClass);
+        PatrolInfoWidget = CreateWidget<UUserWidget>(PC, PatrolInfoWidgetClass);
         if (PatrolInfoWidget) PatrolInfoWidget->AddToViewport(5);
     }
     if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Visible);
     if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Visible);
 
-    // Gameplay input (mouse not needed now)
-    if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
-    {
-        PC->bShowMouseCursor = false;
-        PC->SetInputMode(FInputModeGameOnly());
-    }
+    // apply checkpoints first
+    RobotPawn->SetPatrolCheckpoints(CheckpointLocations);
+
+    // blend camera back to robot
+    PC->bShowMouseCursor = false;
+    PC->SetInputMode(FInputModeGameOnly());
+    FViewTargetTransitionParams P; P.BlendTime = 1.0f; P.BlendFunction = VTBlend_Cubic;
+    PC->SetViewTargetWithBlend(RobotPawn, P.BlendTime, P.BlendFunction);
+
+    // delay AI start slightly so we don't race the camera transition
+    FTimerHandle Th;
+    GetWorldTimerManager().SetTimer(Th, FTimerDelegate::CreateWeakLambda(this, [this]()
+        {
+            if (IsValid(RobotPawn)) RobotPawn->BeginMission();
+        }), 0.05f, false);
 
     UE_LOG(LogTemp, Log, TEXT("Entered simulation mode"));
+}
+
+void AGM_Simulation::LogScreen(const FString& Msg, FColor Col, float Time) const
+{
+    if (GEngine) GEngine->AddOnScreenDebugMessage(-1, Time, Col, Msg);
 }
