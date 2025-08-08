@@ -8,6 +8,8 @@
 #include "Waypoint.h"
 #include "AIController.h"
 #include "Engine/Engine.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit.SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(
@@ -18,9 +20,11 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
     SpringArm->SetupAttachment(RootComponent);
     SpringArm->TargetArmLength = 500.f;
+    SpringArm->bUsePawnControlRotation = false;
 
     ThirdPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ThirdPersonCam"));
     ThirdPersonCamera->SetupAttachment(SpringArm);
+    ThirdPersonCamera->bUsePawnControlRotation = false;
 
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
     AerialCamera->SetupAttachment(RootComponent);
@@ -107,16 +111,26 @@ void ASimulationRobotPawn::HandbrakeInput(float Val)
     if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
         M->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
 }
+
 void ASimulationRobotPawn::StartCameraRotate() { bRotatingCamera = true; }
 void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
-void ASimulationRobotPawn::LookUp(float V) { if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER) SpringArm->AddLocalRotation({ V * LookUpSpeed * GetWorld()->DeltaTimeSeconds,0,0 }); }
-void ASimulationRobotPawn::Turn(float V) { if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER) SpringArm->AddLocalRotation({ 0,V * TurnSpeed * GetWorld()->DeltaTimeSeconds,0 }); }
+
+void ASimulationRobotPawn::LookUp(float V)
+{
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation({ V * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0 });
+}
+void ASimulationRobotPawn::Turn(float V)
+{
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation({ 0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0 });
+}
 
 void ASimulationRobotPawn::ToggleSpeedLimit() { bSpeedLimited = !bSpeedLimited; ApplySpeedLimit(); }
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-        C->EngineSetup.MaxRPM = 3000.f; // keep response; throttle is clamped separately
+        C->EngineSetup.MaxRPM = 3000.f; // throttle clamped separately
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
@@ -140,11 +154,10 @@ void ASimulationRobotPawn::TogglePatrolMode()
         if (AICon && AICon->GetPathFollowingComponent())
         {
             auto* PF = AICon->GetPathFollowingComponent();
-            PF->OnRequestFinished.RemoveAll(this);                    // prevent duplicate binds
+            PF->OnRequestFinished.RemoveAll(this);
             PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
         }
 
-        // initial move
         CurrentWPIndex = 0;
         if (PatrolCheckpoints.Num() > 0)
             AICon->MoveToLocation(PatrolCheckpoints[0], AcceptanceRadius);
@@ -167,7 +180,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
 }
 
 void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
-void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode) TogglePatrolMode(); }
+void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode)  TogglePatrolMode(); }
 
 void ASimulationRobotPawn::ToggleLights()
 {
@@ -210,31 +223,22 @@ void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingRes
 
 void ASimulationRobotPawn::AdvanceToNextPatrolTarget()
 {
-    // Safety: if AI was destroyed/unpossessed between callbacks
     if (!AICon) return;
 
-    const bool bUsingDynamic = (PatrolCheckpoints.Num() > 0);
+    const bool  bUsingDynamic = (PatrolCheckpoints.Num() > 0);
     const int32 Count = bUsingDynamic ? PatrolCheckpoints.Num() : Waypoints.Num();
     if (Count <= 0) return;
 
-    // Next index in a loop
     const int32 NextIndex = (CurrentWPIndex + 1) % Count;
-
-    // Guard: if only one point, do not re-issue a MoveTo (prevents tight completion loop)
-    if (NextIndex == CurrentWPIndex) return;
+    if (NextIndex == CurrentWPIndex) return; // single-point guard
 
     CurrentWPIndex = NextIndex;
 
     if (bUsingDynamic)
-    {
         AICon->MoveToLocation(PatrolCheckpoints[CurrentWPIndex], AcceptanceRadius);
-    }
     else
-    {
         AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
-    }
 }
-
 
 void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 {
@@ -285,4 +289,65 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPosition, FVect
         }
     }
     return false;
+}
+
+void ASimulationRobotPawn::ForceThirdPersonCamera()
+{
+    bUsingAerialView = false;
+    if (ThirdPersonCamera) ThirdPersonCamera->SetActive(true);
+    if (AerialCamera)      AerialCamera->SetActive(false);
+}
+
+// Spawn or update the dedicated CameraActor the PC will view
+ACameraActor* ASimulationRobotPawn::EnsureFollowCameraActor()
+{
+    if (!FollowCamActor)
+    {
+        FActorSpawnParameters Params;
+        Params.Owner = this;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        FollowCamActor = GetWorld()->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), GetActorTransform(), Params);
+
+        // Attach to spring arm so it follows/rotates exactly like the 3P camera
+        if (FollowCamActor && SpringArm)
+        {
+            FollowCamActor->AttachToComponent(SpringArm, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        }
+    }
+
+    if (FollowCamActor && ThirdPersonCamera)
+    {
+        // Match the relative transform & FOV of the 3P camera
+        FollowCamActor->SetActorRelativeTransform(ThirdPersonCamera->GetRelativeTransform());
+
+        if (UCameraComponent* CamComp = FollowCamActor->GetCameraComponent())
+        {
+            CamComp->FieldOfView = ThirdPersonCamera->FieldOfView;
+            CamComp->PostProcessSettings = ThirdPersonCamera->PostProcessSettings;
+            CamComp->PostProcessBlendWeight = ThirdPersonCamera->PostProcessBlendWeight;
+        }
+    }
+
+    return FollowCamActor;
+}
+
+AActor* ASimulationRobotPawn::GetThirdPersonViewTarget()
+{
+    return EnsureFollowCameraActor();
+}
+
+void ASimulationRobotPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
+{
+    // Still provide a valid camera if someone sets the pawn as ViewTarget
+    if (bUsingAerialView && AerialCamera)
+    {
+        AerialCamera->GetCameraView(DeltaTime, OutResult);
+        return;
+    }
+    if (ThirdPersonCamera)
+    {
+        ThirdPersonCamera->GetCameraView(DeltaTime, OutResult);
+        return;
+    }
+    Super::CalcCamera(DeltaTime, OutResult);
 }
