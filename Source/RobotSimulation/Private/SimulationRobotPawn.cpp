@@ -1,4 +1,5 @@
 ﻿#include "SimulationRobotPawn.h"
+#include "GM_Simulation.h"
 #include "PatrolVehicleMovementComponent.h"
 #include "RobotAIController.h"
 #include "Kismet/GameplayStatics.h"
@@ -7,9 +8,8 @@
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "Waypoint.h"
 #include "AIController.h"
-#include "Engine/Engine.h"
 #include "Camera/CameraActor.h"
-#include "Camera/CameraComponent.h"
+#include "Engine/Engine.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit.SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(
@@ -36,8 +36,10 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     Headlight->SetupAttachment(RootComponent);
     Headlight->Intensity = 5000.f;
 
+    // Player owns the pawn at start; we enable AI only when patrol starts
     AutoPossessPlayer = EAutoReceiveInput::Player0;
-    AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+    AutoPossessAI = EAutoPossessAI::Disabled;
+
     AIControllerClass = ARobotAIController::StaticClass();
 }
 
@@ -45,12 +47,29 @@ void ASimulationRobotPawn::BeginPlay()
 {
     Super::BeginPlay();
 
+    // Register with the GameMode so it always knows the live pawn
+    if (AGM_Simulation* GM = GetWorld()->GetAuthGameMode<AGM_Simulation>())
+    {
+        GM->NotifyRobotReady(this);
+        GM->LogScreen(TEXT("[Pawn] Registered with GameMode."), FColor::Green, 1.5f);
+    }
+
+    ForceThirdPersonCamera();
+    EnsureViewTargetProxy();
+
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
         PC->bShowMouseCursor = true;
-        PC->SetInputMode(FInputModeGameAndUI().SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock));
+        PC->bEnableClickEvents = true;
+        PC->bEnableMouseOverEvents = true;
+
+        FInputModeGameAndUI Mode;
+        Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+        Mode.SetHideCursorDuringCapture(false);
+        PC->SetInputMode(Mode);
     }
 
+    // Waypoints authored in level
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Waypoints);
     Waypoints.Sort([](const AActor& A, const AActor& B)
         {
@@ -59,7 +78,16 @@ void ASimulationRobotPawn::BeginPlay()
             return (WA && WB) ? WA->PatrolOrder < WB->PatrolOrder : false;
         });
 
-    if (!bSpeedLimited) ToggleSpeedLimit(); // start limited
+    if (!bSpeedLimited) ToggleSpeedLimit();
+}
+
+void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (AGM_Simulation* GM = GetWorld()->GetAuthGameMode<AGM_Simulation>())
+    {
+        if (GM->RobotPawn == this) GM->NotifyRobotReady(nullptr);
+    }
+    Super::EndPlay(EndPlayReason);
 }
 
 void ASimulationRobotPawn::Tick(float DeltaTime)
@@ -93,6 +121,7 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
     P->BindAction("ChangeView", IE_Pressed, this, &ASimulationRobotPawn::ChangeView);
 }
 
+// --- Input helpers ---
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
     if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh) Val = 0.f;
@@ -111,26 +140,25 @@ void ASimulationRobotPawn::HandbrakeInput(float Val)
     if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
         M->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
 }
-
 void ASimulationRobotPawn::StartCameraRotate() { bRotatingCamera = true; }
 void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
-
 void ASimulationRobotPawn::LookUp(float V)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation({ V * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0 });
+        SpringArm->AddLocalRotation({ V * LookUpSpeed * GetWorld()->DeltaTimeSeconds,0,0 });
 }
 void ASimulationRobotPawn::Turn(float V)
 {
     if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation({ 0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0 });
+        SpringArm->AddLocalRotation({ 0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds,0 });
 }
 
+// --- Modes ---
 void ASimulationRobotPawn::ToggleSpeedLimit() { bSpeedLimited = !bSpeedLimited; ApplySpeedLimit(); }
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-        C->EngineSetup.MaxRPM = 3000.f; // throttle clamped separately
+        C->EngineSetup.MaxRPM = 3000.f; // we clamp throttle separately
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
@@ -139,6 +167,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
 
     if (bIsPatrolMode)
     {
+        // AI drives
         if (auto* PC = Cast<APlayerController>(GetController())) PC->UnPossess();
 
         if (!AICon)
@@ -148,7 +177,6 @@ void ASimulationRobotPawn::TogglePatrolMode()
             AICon = GetWorld()->SpawnActor<ARobotAIController>(ARobotAIController::StaticClass(),
                 GetActorLocation(), GetActorRotation(), Params);
         }
-
         if (AICon) AICon->Possess(this);
 
         if (AICon && AICon->GetPathFollowingComponent())
@@ -159,13 +187,11 @@ void ASimulationRobotPawn::TogglePatrolMode()
         }
 
         CurrentWPIndex = 0;
-        if (PatrolCheckpoints.Num() > 0)
-            AICon->MoveToLocation(PatrolCheckpoints[0], AcceptanceRadius);
-        else if (Waypoints.Num() > 0)
-            AICon->MoveToActor(Waypoints[0], AcceptanceRadius);
+        IssueMoveToCurrentTarget();
     }
     else
     {
+        // Player drives (keep UI interactive)
         if (AICon)
         {
             if (auto* PF = AICon->GetPathFollowingComponent())
@@ -175,7 +201,18 @@ void ASimulationRobotPawn::TogglePatrolMode()
         }
 
         if (auto* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
+        {
             PC->Possess(this);
+
+            PC->bShowMouseCursor = true;
+            PC->bEnableClickEvents = true;
+            PC->bEnableMouseOverEvents = true;
+
+            FInputModeGameAndUI Mode;
+            Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+            Mode.SetHideCursorDuringCapture(false);
+            PC->SetInputMode(Mode);
+        }
     }
 }
 
@@ -191,14 +228,23 @@ void ASimulationRobotPawn::ToggleLights()
 void ASimulationRobotPawn::ChangeView()
 {
     bUsingAerialView = !bUsingAerialView;
-
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
-        if (ThirdPersonCamera) ThirdPersonCamera->SetActive(!bUsingAerialView);
-        if (AerialCamera)      AerialCamera->SetActive(bUsingAerialView);
-
+        ForceThirdPersonCamera();
         FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
-        PC->SetViewTarget(this, Params);
+        if (bUsingAerialView && AerialCamera)
+        {
+            AerialCamera->SetActive(true);
+            ThirdPersonCamera->SetActive(false);
+            PC->SetViewTarget(this, Params); // pawn calc camera picks the active cam
+        }
+        else
+        {
+            ThirdPersonCamera->SetActive(true);
+            AerialCamera->SetActive(false);
+            EnsureViewTargetProxy();
+            if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
+        }
     }
 }
 
@@ -233,27 +279,74 @@ void ASimulationRobotPawn::AdvanceToNextPatrolTarget()
     if (NextIndex == CurrentWPIndex) return; // single-point guard
 
     CurrentWPIndex = NextIndex;
-
-    if (bUsingDynamic)
-        AICon->MoveToLocation(PatrolCheckpoints[CurrentWPIndex], AcceptanceRadius);
-    else
-        AICon->MoveToActor(Waypoints[CurrentWPIndex], AcceptanceRadius);
+    IssueMoveToCurrentTarget();
 }
 
+void ASimulationRobotPawn::IssueMoveToCurrentTarget()
+{
+    if (!AICon) return;
+
+    FAIMoveRequest Req;
+    Req.SetUsePathfinding(true);
+    Req.SetAllowPartialPath(false);              // stay on navmesh
+    Req.SetAcceptanceRadius(AcceptanceRadius);
+
+    if (PatrolCheckpoints.Num() > 0) Req.SetGoalLocation(PatrolCheckpoints[CurrentWPIndex]);
+    else if (Waypoints.Num() > 0)    Req.SetGoalActor(Waypoints[CurrentWPIndex]);
+
+    AICon->MoveTo(Req);
+}
+
+// --- Cameras ---
 void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 {
     bUsingAerialView = bUseAerial;
 
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
-        if (ThirdPersonCamera) ThirdPersonCamera->SetActive(!bUsingAerialView);
-        if (AerialCamera)      AerialCamera->SetActive(bUsingAerialView);
+        ThirdPersonCamera->SetActive(!bUsingAerialView);
+        AerialCamera->SetActive(bUsingAerialView);
 
         FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
-        PC->SetViewTarget(this, Params);
+        if (bUseAerial && AerialCamera)
+            PC->SetViewTarget(this, Params);
+        else
+        {
+            EnsureViewTargetProxy();
+            if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
+        }
     }
 }
 
+void ASimulationRobotPawn::ForceThirdPersonCamera()
+{
+    bUsingAerialView = false;
+    if (ThirdPersonCamera) ThirdPersonCamera->SetActive(true);
+    if (AerialCamera)      AerialCamera->SetActive(false);
+    EnsureViewTargetProxy();
+}
+
+void ASimulationRobotPawn::EnsureViewTargetProxy()
+{
+    if (IsValid(ViewTargetProxy)) return;
+
+    if (UWorld* W = GetWorld())
+    {
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        ViewTargetProxy = W->SpawnActor<ACameraActor>(GetActorLocation(), GetActorRotation(), Params);
+
+        if (ViewTargetProxy && SpringArm)
+        {
+            ViewTargetProxy->AttachToComponent(SpringArm, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+            ViewTargetProxy->SetActorRelativeTransform(
+                ThirdPersonCamera ? ThirdPersonCamera->GetRelativeTransform()
+                : FTransform(FRotator::ZeroRotator, FVector(0, 0, -SpringArm->TargetArmLength)));
+        }
+    }
+}
+
+// --- Checkpoints ---
 void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations)
 {
     PatrolCheckpoints = CheckpointLocations;
@@ -261,6 +354,7 @@ void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& Checkpoin
     UE_LOG(LogTemp, Log, TEXT("Set %d patrol checkpoints"), PatrolCheckpoints.Num());
 }
 
+// --- Screen to world ---
 bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation)
 {
     if (auto* PC = Cast<APlayerController>(GetController()))
@@ -289,65 +383,4 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPosition, FVect
         }
     }
     return false;
-}
-
-void ASimulationRobotPawn::ForceThirdPersonCamera()
-{
-    bUsingAerialView = false;
-    if (ThirdPersonCamera) ThirdPersonCamera->SetActive(true);
-    if (AerialCamera)      AerialCamera->SetActive(false);
-}
-
-// Spawn or update the dedicated CameraActor the PC will view
-ACameraActor* ASimulationRobotPawn::EnsureFollowCameraActor()
-{
-    if (!FollowCamActor)
-    {
-        FActorSpawnParameters Params;
-        Params.Owner = this;
-        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        FollowCamActor = GetWorld()->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), GetActorTransform(), Params);
-
-        // Attach to spring arm so it follows/rotates exactly like the 3P camera
-        if (FollowCamActor && SpringArm)
-        {
-            FollowCamActor->AttachToComponent(SpringArm, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-        }
-    }
-
-    if (FollowCamActor && ThirdPersonCamera)
-    {
-        // Match the relative transform & FOV of the 3P camera
-        FollowCamActor->SetActorRelativeTransform(ThirdPersonCamera->GetRelativeTransform());
-
-        if (UCameraComponent* CamComp = FollowCamActor->GetCameraComponent())
-        {
-            CamComp->FieldOfView = ThirdPersonCamera->FieldOfView;
-            CamComp->PostProcessSettings = ThirdPersonCamera->PostProcessSettings;
-            CamComp->PostProcessBlendWeight = ThirdPersonCamera->PostProcessBlendWeight;
-        }
-    }
-
-    return FollowCamActor;
-}
-
-AActor* ASimulationRobotPawn::GetThirdPersonViewTarget()
-{
-    return EnsureFollowCameraActor();
-}
-
-void ASimulationRobotPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
-{
-    // Still provide a valid camera if someone sets the pawn as ViewTarget
-    if (bUsingAerialView && AerialCamera)
-    {
-        AerialCamera->GetCameraView(DeltaTime, OutResult);
-        return;
-    }
-    if (ThirdPersonCamera)
-    {
-        ThirdPersonCamera->GetCameraView(DeltaTime, OutResult);
-        return;
-    }
-    Super::CalcCamera(DeltaTime, OutResult);
 }

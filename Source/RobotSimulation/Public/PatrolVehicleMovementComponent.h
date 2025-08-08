@@ -5,9 +5,6 @@
 #include "AI/Navigation/PathFollowingAgentInterface.h"
 #include "PatrolVehicleMovementComponent.generated.h"
 
-/**
- * Custom movement component that allows AI navigation control for vehicles.
- */
 UCLASS()
 class ROBOTSIMULATION_API UPatrolVehicleMovementComponent
     : public UChaosWheeledVehicleMovementComponent
@@ -18,19 +15,19 @@ class ROBOTSIMULATION_API UPatrolVehicleMovementComponent
 public:
     UPatrolVehicleMovementComponent();
 
-    // IPathFollowingAgentInterface implementation
-    /** Called by PathFollowingComponent to push movement velocity */
+    // IPathFollowingAgentInterface
     virtual void RequestDirectMove(const FVector& MoveVelocity, bool bForceMaxSpeed) override;
-
-    /** Called by PathFollowingComponent for path-based movement */
     virtual void RequestPathMove(const FVector& MoveInput) override;
-
-    /** Returns true if the agent can start path following */
     virtual bool CanStartPathFollowing() const override;
-
-    /** Called when movement should be stopped */
     virtual void StopActiveMovement() override;
 
-    /** Returns the location used by AI pathfinding */
     FVector GetPathFollowingAgentLocation() const;
+
+    // ↓ Helps keep the car on the lane by slowing for sharp turns
+    UPROPERTY(EditAnywhere, Category = "AI|Cornering")
+    float CornerSlowStartAngleDeg = 20.f;      // start easing throttle after this angle
+    UPROPERTY(EditAnywhere, Category = "AI|Cornering")
+    float CornerSlowMaxAngleDeg = 60.f;      // at/over this angle throttle is at MinThrottleWhenTurning
+    UPROPERTY(EditAnywhere, Category = "AI|Cornering", meta = (ClampMin = "0.05", ClampMax = "1.0"))
+    float MinThrottleWhenTurning = 0.25f;     // never go below this while turning (prevents stalling)
 };

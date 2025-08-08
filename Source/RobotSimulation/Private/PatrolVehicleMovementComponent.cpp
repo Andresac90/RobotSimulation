@@ -1,60 +1,60 @@
 #include "PatrolVehicleMovementComponent.h"
 #include "Engine/Engine.h"
+#include "GameFramework/Actor.h"
+#include "Math/UnrealMathUtility.h"
 
 UPatrolVehicleMovementComponent::UPatrolVehicleMovementComponent()
 {
-
 }
 
 void UPatrolVehicleMovementComponent::RequestDirectMove(const FVector& MoveVelocity, bool /*bForceMaxSpeed*/)
 {
     if (MoveVelocity.IsNearlyZero())
     {
-        // Stop the vehicle if no movement is requested
         SetThrottleInput(0.0f);
         SetSteeringInput(0.0f);
         return;
     }
 
-    FVector Dir = MoveVelocity.GetSafeNormal();
-    FVector ForwardVector = GetOwner()->GetActorForwardVector();
-    FVector RightVector = GetOwner()->GetActorRightVector();
+    const FVector Dir = MoveVelocity.GetSafeNormal();
+    const FVector ForwardVector = GetOwner()->GetActorForwardVector();
+    const FVector RightVector = GetOwner()->GetActorRightVector();
 
-    // Calculate forward and right components
-    float Forward = FVector::DotProduct(ForwardVector, Dir);
-    float Right = FVector::DotProduct(RightVector, Dir);
+    const float Forward = FVector::DotProduct(ForwardVector, Dir);
+    const float Right = FVector::DotProduct(RightVector, Dir);
 
-    // Apply throttle (only forward, no reverse for simplicity)
-    SetThrottleInput(FMath::Clamp(Forward, -1.0f, 1.0f));
+    // --- Corner-aware throttle scaling ---
+    const float CosAngle = FMath::Clamp(Forward, -1.f, 1.f);
+    const float AngleDeg = FMath::RadiansToDegrees(FMath::Acos(CosAngle));
 
-    // Apply steering
-    SetSteeringInput(FMath::Clamp(Right, -1.0f, 1.0f));
+    float SlowAlpha = FMath::GetRangePct(CornerSlowStartAngleDeg, CornerSlowMaxAngleDeg, AngleDeg);
+    SlowAlpha = FMath::Clamp(SlowAlpha, 0.f, 1.f);
 
-    // Debug logging
-    UE_LOG(LogTemp, VeryVerbose, TEXT("RequestDirectMove: Forward=%f, Right=%f, MoveVel=%s"),
-        Forward, Right, *MoveVelocity.ToString());
+    const float ThrottleScale = FMath::Lerp(1.f, MinThrottleWhenTurning, SlowAlpha);
+
+    SetThrottleInput(FMath::Clamp(Forward, -1.f, 1.f) * ThrottleScale);
+    SetSteeringInput(FMath::Clamp(Right, -1.f, 1.f));
+
+    // Optional: add a touch of braking if turning extremely hard (keeps it glued to path)
+    const bool bVeryHardTurn = AngleDeg >= CornerSlowMaxAngleDeg * 0.9f;
+    SetHandbrakeInput(bVeryHardTurn);
 }
 
 void UPatrolVehicleMovementComponent::RequestPathMove(const FVector& MoveInput)
 {
-    // For vehicles, we typically handle this the same as RequestDirectMove
     RequestDirectMove(MoveInput, false);
 }
 
 bool UPatrolVehicleMovementComponent::CanStartPathFollowing() const
 {
-    // Return true if the vehicle is ready to follow paths
     return GetOwner() != nullptr && IsValid(GetOwner());
 }
 
 void UPatrolVehicleMovementComponent::StopActiveMovement()
 {
-    // Stop all movement inputs
     SetThrottleInput(0.0f);
     SetSteeringInput(0.0f);
     SetHandbrakeInput(true);
-
-    UE_LOG(LogTemp, Log, TEXT("StopActiveMovement called"));
 }
 
 FVector UPatrolVehicleMovementComponent::GetPathFollowingAgentLocation() const

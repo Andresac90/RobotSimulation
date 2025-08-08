@@ -5,7 +5,6 @@
 #include "Navigation/PathFollowingComponent.h"
 #include "AITypes.h"
 #include "Camera/CameraComponent.h"
-#include "Camera/CameraTypes.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "SimulationRobotPawn.generated.h"
@@ -23,6 +22,7 @@ public:
     ASimulationRobotPawn(const FObjectInitializer& ObjInit);
     virtual void Tick(float DeltaTime) override;
 
+    // Controls
     UFUNCTION(BlueprintCallable, Category = "Control") void ToggleSpeedLimit();
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void TogglePatrolMode();
     UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();
@@ -30,14 +30,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Mission") void EndMission();
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();
 
-    // Used by GameMode to make sure the 3P cam is active
-    UFUNCTION(BlueprintCallable, Category = "Camera")
-    void ForceThirdPersonCamera();
+    // Force 3P camera active on the pawn
+    UFUNCTION(BlueprintCallable, Category = "Camera")  void ForceThirdPersonCamera();
 
-    // ✅ Returns an actor the PlayerController should view for 3rd-person (a CameraActor attached to the spring arm)
-    UFUNCTION(BlueprintCallable, Category = "Camera")
-    AActor* GetThirdPersonViewTarget();
+    // Stable view target actor (attached to spring arm)
+    UFUNCTION(BlueprintPure, Category = "Camera") AActor* GetThirdPersonViewTarget() const { return (AActor*)ViewTargetProxy; }
 
+    // HUD
     UPROPERTY(BlueprintReadOnly, Category = "Stats") float SpeedKmh = 0.f;
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0")) float MaxSpeedKmh = 5.f;
 
@@ -45,7 +44,7 @@ public:
     void OnUpdateHUD(float InSpeedKmh, bool bSpeedLimitedStatus, bool bLightsOnStatus,
         bool bPatrolModeStatus, int32 TreatsCount, int32 CurrentWPDisplayIndex, int32 TotalWPCount);
 
-    // planning helpers
+    // Planning helpers
     UFUNCTION(BlueprintCallable, Category = "Camera") void SetAerialView(bool bUseAerial);
     UFUNCTION(BlueprintPure, Category = "Patrol") bool IsPatrolling() const { return bIsPatrolMode; }
     UFUNCTION(BlueprintCallable, Category = "Patrol") void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
@@ -53,13 +52,10 @@ public:
 
 protected:
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void PossessedBy(AController* NewController) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
-    // Ensure a valid camera when the pawn is used as ViewTarget (kept for completeness)
-    virtual void CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult) override;
-
-    // inputs & helpers
     void ThrottleInput(float Val);
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
@@ -71,12 +67,10 @@ protected:
     void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
     void ApplySpeedLimit();
     void AdvanceToNextPatrolTarget();
-
-    // Builds/updates the attached CameraActor that the PC will view
-    ACameraActor* EnsureFollowCameraActor();
+    void IssueMoveToCurrentTarget();
 
 private:
-    // patrol
+    // Patrol / AI
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
     bool bIsPatrolMode = false;
 
@@ -89,7 +83,7 @@ private:
     UPROPERTY(BlueprintReadOnly, Category = "Stats", meta = (AllowPrivateAccess = "true"))
     int32 TreatsDetected = 0;
 
-    // camera
+    // Cameras
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     USpringArmComponent* SpringArm;
 
@@ -111,7 +105,11 @@ private:
     bool bUsingAerialView = false;
     bool bRotatingCamera = false;
 
-    // lights/speed
+    // Stable Actor used as PC’s view target (attached to SpringArm)
+    UPROPERTY() ACameraActor* ViewTargetProxy = nullptr;
+    void EnsureViewTargetProxy();
+
+    // Lights / speed
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* Headlight;
 
@@ -122,11 +120,8 @@ private:
     bool bSpeedLimited = false;
 
     UPROPERTY(EditAnywhere, Category = "Patrol")
-    float AcceptanceRadius = 200.f;
+    float AcceptanceRadius = 100.f; // tighter cornering
 
-    // dynamic checkpoints
+    // Dynamic checkpoints
     TArray<FVector> PatrolCheckpoints;
-
-    // The dedicated camera actor we attach to the spring arm and use as the PC's view target
-    UPROPERTY() ACameraActor* FollowCamActor = nullptr;
 };
