@@ -1,19 +1,21 @@
-﻿#include "GM_Simulation.h"
+﻿#include "GM_Simulation.h" // MUST be first
 #include "SimulationRobotPawn.h"
+#include "CheckpointMarker.h"
+
 #include "Blueprint/UserWidget.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerStart.h"
 #include "Camera/CameraActor.h"
 #include "NavigationSystem.h"
-#include "Engine/Engine.h"
 #include "TimerManager.h"
+#include "Engine/Engine.h"
 
 AGM_Simulation::AGM_Simulation()
 {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Safe defaults; the BP GameMode can override RobotPawnClass with BP_RobotPawn
+    // Safe defaults; your BP_GM should point RobotPawnClass to BP_RobotPawn
     DefaultPawnClass = ASimulationRobotPawn::StaticClass();
     RobotPawnClass = ASimulationRobotPawn::StaticClass();
 }
@@ -21,16 +23,14 @@ AGM_Simulation::AGM_Simulation()
 void AGM_Simulation::BeginPlay()
 {
     Super::BeginPlay();
-
-    // Make sure there is a pawn and we have a pointer to it
     RobotPawn = ResolveOrSpawnRobotPawn();
-
     ResolvePlanningViewActor();
     SetupPlanningMode();
 }
 
 // -------------------------------------------------------------
-
+// Planning camera resolve
+// -------------------------------------------------------------
 void AGM_Simulation::ResolvePlanningViewActor()
 {
     PlanningViewActor = nullptr;
@@ -61,20 +61,20 @@ void AGM_Simulation::ResolvePlanningViewActor()
     }
 }
 
-// Finds or spawns the robot pawn and returns it.
+// -------------------------------------------------------------
+// Robot resolve / spawn
+// -------------------------------------------------------------
 ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
 {
     UWorld* W = GetWorld();
     if (!W) return nullptr;
 
-    // 0) Using the already-registered pointer?
     if (RobotPawn && IsValid(RobotPawn))
     {
         UE_LOG(LogTemp, Log, TEXT("[GM] Using registered robot pawn: %s"), *RobotPawn->GetName());
         return RobotPawn;
     }
 
-    // 1) Is the PlayerController already possessing it?
     if (ASimulationRobotPawn* PP = Cast<ASimulationRobotPawn>(UGameplayStatics::GetPlayerPawn(W, 0)))
     {
         UE_LOG(LogTemp, Log, TEXT("[GM] Found player pawn: %s"), *PP->GetName());
@@ -82,7 +82,6 @@ ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
         return PP;
     }
 
-    // 2) Any ASimulationRobotPawn actors in the world?
     {
         TArray<AActor*> Found;
         UGameplayStatics::GetAllActorsOfClass(W, ASimulationRobotPawn::StaticClass(), Found);
@@ -94,7 +93,7 @@ ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
         }
     }
 
-    // 3) Spawn one (use RobotPawnClass set in BP if provided)
+    // spawn a new one
     TSubclassOf<ASimulationRobotPawn> SpawnClass = RobotPawnClass;
     if (!*SpawnClass)
     {
@@ -104,13 +103,11 @@ ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
             SpawnClass = ASimulationRobotPawn::StaticClass();
     }
 
-    // Choose a PlayerStart for transform (or identity if none)
     FTransform SpawnTM;
     {
         TArray<AActor*> Starts;
         UGameplayStatics::GetAllActorsOfClass(W, APlayerStart::StaticClass(), Starts);
         if (Starts.Num() > 0) SpawnTM = Starts[0]->GetActorTransform();
-        UE_LOG(LogTemp, Log, TEXT("[GM] Spawning robot at %s"), *SpawnTM.GetLocation().ToString());
     }
 
     FActorSpawnParameters Params;
@@ -119,7 +116,7 @@ ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
 
     if (NewPawn)
     {
-        UE_LOG(LogTemp, Log, TEXT("[GM] Spawned robot pawn: %s (class: %s)"),
+        UE_LOG(LogTemp, Log, TEXT("[GM] Spawned robot pawn: %s (class %s)"),
             *NewPawn->GetName(), *NewPawn->GetClass()->GetName());
         RobotPawn = NewPawn;
     }
@@ -133,7 +130,8 @@ ASimulationRobotPawn* AGM_Simulation::ResolveOrSpawnRobotPawn()
 }
 
 // -------------------------------------------------------------
-
+// Commands
+// -------------------------------------------------------------
 void AGM_Simulation::StartSimulation()
 {
     if (CurrentState == ESimulationState::Simulating)
@@ -162,8 +160,6 @@ void AGM_Simulation::StopSimulation()
     SetupPlanningMode();
 }
 
-// -------------------------------------------------------------
-
 void AGM_Simulation::AddCheckpoint(FVector WorldLocation)
 {
     if (CurrentState != ESimulationState::Planning)
@@ -172,7 +168,7 @@ void AGM_Simulation::AddCheckpoint(FVector WorldLocation)
         return;
     }
 
-    // Project clicks to the navmesh (keeps vehicle on-road)
+    // Snap clicks to the navmesh so the vehicle stays on-road
     if (UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
     {
         FNavLocation Proj;
@@ -181,23 +177,39 @@ void AGM_Simulation::AddCheckpoint(FVector WorldLocation)
     }
 
     CheckpointLocations.Add(WorldLocation);
+    RefreshMarkers();
 }
 
 void AGM_Simulation::ClearCheckpoints()
 {
     if (CurrentState != ESimulationState::Planning) return;
+
     CheckpointLocations.Empty();
+
+    for (TWeakObjectPtr<AActor>& M : CheckpointMarkers)
+        if (M.IsValid()) M->Destroy();
+    CheckpointMarkers.Empty();
 }
 
 void AGM_Simulation::RemoveLastCheckpoint()
 {
     if (CurrentState != ESimulationState::Planning) return;
+
     if (CheckpointLocations.Num() > 0)
         CheckpointLocations.RemoveAt(CheckpointLocations.Num() - 1);
+
+    if (CheckpointMarkers.Num() > 0)
+    {
+        if (CheckpointMarkers.Last().IsValid())
+            CheckpointMarkers.Last()->Destroy();
+        CheckpointMarkers.RemoveAt(CheckpointMarkers.Num() - 1);
+        UpdateMarkerIndices();
+    }
 }
 
 // -------------------------------------------------------------
-
+// Modes
+// -------------------------------------------------------------
 void AGM_Simulation::SetupPlanningMode()
 {
     RobotPawn = ResolveOrSpawnRobotPawn();
@@ -208,7 +220,6 @@ void AGM_Simulation::SetupPlanningMode()
     APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
     if (PC)
     {
-        // Keep cursor/UI functional while planning
         PC->bAutoManageActiveCameraTarget = true;
         PC->bShowMouseCursor = true;
         PC->bEnableClickEvents = true;
@@ -222,7 +233,7 @@ void AGM_Simulation::SetupPlanningMode()
         ResolvePlanningViewActor();
         if (PlanningViewActor)
         {
-            FViewTargetTransitionParams P; P.BlendTime = 1.0f; P.BlendFunction = VTBlend_Cubic;
+            FViewTargetTransitionParams P; P.BlendTime = 1.f; P.BlendFunction = VTBlend_Cubic;
             PC->SetViewTargetWithBlend(PlanningViewActor, P.BlendTime, P.BlendFunction);
         }
         else if (RobotPawn)
@@ -237,6 +248,8 @@ void AGM_Simulation::SetupPlanningMode()
         MapOverviewWidget = CreateWidget<UUserWidget>(PC, MapOverviewWidgetClass);
         if (MapOverviewWidget) MapOverviewWidget->AddToViewport(10);
     }
+
+    RefreshMarkers();
 
     if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Visible);
     if (RobotStatsWidget)  RobotStatsWidget->SetVisibility(ESlateVisibility::Hidden);
@@ -275,11 +288,11 @@ void AGM_Simulation::SetupSimulationMode()
     if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Visible);
     if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Visible);
 
-    // Feed checkpoints and make sure 3P cam is active on the pawn
+    // Feed checkpoints and ensure 3P camera is active
     RobotPawn->SetPatrolCheckpoints(CheckpointLocations);
     RobotPawn->ForceThirdPersonCamera();
 
-    // Keep UI clickable *during* simulation
+    // Keep UI interactive while sim runs
     PC->bAutoManageActiveCameraTarget = false;
     PC->bShowMouseCursor = true;
     PC->bEnableClickEvents = true;
@@ -290,39 +303,74 @@ void AGM_Simulation::SetupSimulationMode()
     Mode.SetHideCursorDuringCapture(false);
     PC->SetInputMode(Mode);
 
-    // View the pawn’s stable 3P camera proxy (never invalid, attached to spring arm)
+    // Blend to the pawn’s stable view-target
     if (AActor* VT = RobotPawn->GetThirdPersonViewTarget())
     {
         FViewTargetTransitionParams P; P.BlendTime = 1.0f; P.BlendFunction = VTBlend_Cubic;
         PC->SetViewTargetWithBlend(VT, P.BlendTime, P.BlendFunction);
     }
 
-    // Kick patrol slightly after blend to avoid races
-    FTimerHandle ThStart;
-    GetWorldTimerManager().SetTimer(ThStart, FTimerDelegate::CreateWeakLambda(this, [this]()
-        {
-            if (RobotPawn) RobotPawn->BeginMission();
-        }), 0.05f, false);
+    // Make sure your keyboard binds still reach the pawn while AI owns it
+    RobotPawn->EnableInput(PC);
 
-    // Re-assert view next tick just in case anything shifted
-    ReassertRobotView(0.15f);
+    // Start in patrol mode immediately
+    RobotPawn->BeginMission();
+
+    // Re-assert view next tick just in case
+    ReassertRobotView();
 }
 
-void AGM_Simulation::ReassertRobotView(float /*DelaySeconds*/)
+void AGM_Simulation::ReassertRobotView()
 {
-    GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]()
-        {
-            if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
+    GetWorldTimerManager().SetTimerForNextTick(
+        FTimerDelegate::CreateWeakLambda(this, [this]()
             {
-                if (RobotPawn)
+                if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
                 {
-                    if (AActor* Cam = RobotPawn->GetThirdPersonViewTarget())
-                        PC->SetViewTarget(Cam);
-                    else
-                        PC->SetViewTarget(RobotPawn);
+                    if (RobotPawn)
+                    {
+                        if (AActor* Cam = RobotPawn->GetThirdPersonViewTarget())
+                            PC->SetViewTarget(Cam);
+                        else
+                            PC->SetViewTarget(RobotPawn);
+                    }
                 }
-            }
-        }));
+            })
+    );
+}
+
+// -------------------------------------------------------------
+// Visual markers
+// -------------------------------------------------------------
+void AGM_Simulation::RefreshMarkers()
+{
+    // clear old
+    for (TWeakObjectPtr<AActor>& M : CheckpointMarkers)
+        if (M.IsValid()) M->Destroy();
+    CheckpointMarkers.Empty();
+
+    if (!CheckpointMarkerClass) return;
+
+    UWorld* W = GetWorld();
+    if (!W) return;
+
+    for (int32 i = 0; i < CheckpointLocations.Num(); ++i)
+    {
+        const FVector L = CheckpointLocations[i];
+        FActorSpawnParameters P; P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        if (ACheckpointMarker* M = W->SpawnActor<ACheckpointMarker>(CheckpointMarkerClass, FTransform(L)))
+        {
+            M->InitMarker(i + 1);
+            CheckpointMarkers.Add(M);
+        }
+    }
+}
+
+void AGM_Simulation::UpdateMarkerIndices()
+{
+    for (int32 i = 0; i < CheckpointMarkers.Num(); ++i)
+        if (ACheckpointMarker* M = Cast<ACheckpointMarker>(CheckpointMarkers[i].Get()))
+            M->InitMarker(i + 1);
 }
 
 void AGM_Simulation::LogScreen(const FString& Msg, FColor Col, float Time) const

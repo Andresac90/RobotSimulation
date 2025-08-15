@@ -1,5 +1,5 @@
+// .cpp
 #include "RobotAIController.h"
-#include "NavigationSystem.h"
 
 ARobotAIController::ARobotAIController()
 {
@@ -11,5 +11,5 @@ ARobotAIController::ARobotAIController()
 void ARobotAIController::OnPossess(APawn* InPawn)
 {
     Super::OnPossess(InPawn);
-    UE_LOG(LogTemp, Log, TEXT("RobotAIController: Possessed Pawn %s"), *InPawn->GetName());
+    UE_LOG(LogTemp, Log, TEXT("RobotAIController: Possessed %s"), *GetNameSafe(InPawn));
 }

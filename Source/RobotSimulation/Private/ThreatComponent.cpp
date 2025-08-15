@@ -1,0 +1,2 @@
+// .cpp
+#include "ThreatComponent.h"
