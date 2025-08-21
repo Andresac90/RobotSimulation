@@ -11,9 +11,12 @@
 #include "Camera/CameraActor.h"
 #include "Waypoint.h"
 
-#include "Components/TextRenderComponent.h"
 #include "DrawDebugHelpers.h"
 #include "ThreatComponent.h"
+
+// overlay
+#include "ThreatBoxesWidget.h"
+#include "ThreatScreenBox.h"
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit.SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(AWheeledVehiclePawn::VehicleMovementComponentName))
@@ -46,8 +49,9 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     ThreatSensor->SetCollisionResponseToAllChannels(ECR_Overlap);
     ThreatSensor->SetSphereRadius(ThreatSenseRadius);
 
-    AutoPossessPlayer = EAutoReceiveInput::Player0;           // player owns in planning
-    AutoPossessAI = EAutoPossessAI::Disabled;             // AI only when we toggle
+    // player owns in planning; AI only when toggled
+    AutoPossessPlayer = EAutoReceiveInput::Player0;
+    AutoPossessAI = EAutoPossessAI::Disabled;
     AIControllerClass = ARobotAIController::StaticClass();
 }
 
@@ -67,10 +71,20 @@ void ASimulationRobotPawn::BeginPlay()
         PC->bEnableClickEvents = true;
         PC->bEnableMouseOverEvents = true;
 
-        FInputModeGameAndUI Mode; Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); Mode.SetHideCursorDuringCapture(false);
+        FInputModeGameAndUI Mode;
+        Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+        Mode.SetHideCursorDuringCapture(false);
         PC->SetInputMode(Mode);
+
+        // overlay widget
+        if (ThreatOverlayWidgetClass)
+        {
+            ThreatOverlayWidget = CreateWidget<UThreatBoxesWidget>(PC, ThreatOverlayWidgetClass);
+            if (ThreatOverlayWidget) ThreatOverlayWidget->AddToViewport(50);
+        }
     }
 
+    // designer-authored waypoints
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Waypoints);
     Waypoints.Sort([](const AActor& A, const AActor& B)
         {
@@ -89,6 +103,7 @@ void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     if (AGM_Simulation* GM = GetWorld()->GetAuthGameMode<AGM_Simulation>())
         if (GM->GetRobotPawn() == this) GM->NotifyRobotReady(nullptr);
+
     Super::EndPlay(EndPlayReason);
 }
 
@@ -97,9 +112,11 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
     Super::Tick(DeltaTime);
 
     SpeedKmh = 0.f;
-    if (auto* M = GetVehicleMovementComponent()) SpeedKmh = M->GetForwardSpeed() * 0.036f;
+    if (auto* M = GetVehicleMovementComponent())
+        SpeedKmh = M->GetForwardSpeed() * 0.036f;
 
-    if (bDrawThreatBoxes) DrawThreatDebug();
+    if (bDrawThreatBoxes) DrawThreatDebug(); // 3D debug
+    UpdateThreatOverlay();                   // 2D rectangles
 
     const int32 Total = (PatrolCheckpoints.Num() > 0) ? PatrolCheckpoints.Num() : Waypoints.Num();
     OnUpdateHUD(SpeedKmh, bSpeedLimited, bLightsOn, bIsPatrolMode,
@@ -124,7 +141,7 @@ void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
     P->BindAction("ChangeView", IE_Pressed, this, &ASimulationRobotPawn::ChangeView);
 }
 
-// input helpers
+// --- input helpers ---
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
     if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh) Val = 0.f;
@@ -156,12 +173,16 @@ void ASimulationRobotPawn::Turn(float V)
         SpringArm->AddLocalRotation(FRotator(0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
 }
 
-// modes
-void ASimulationRobotPawn::ToggleSpeedLimit() { bSpeedLimited = !bSpeedLimited; ApplySpeedLimit(); }
+// --- modes ---
+void ASimulationRobotPawn::ToggleSpeedLimit()
+{
+    bSpeedLimited = !bSpeedLimited;
+    ApplySpeedLimit();
+}
 void ASimulationRobotPawn::ApplySpeedLimit()
 {
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-        C->EngineSetup.MaxRPM = 3000.f; // throttle capping handled in input
+        C->EngineSetup.MaxRPM = 3000.f; // input clamps throttle
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
@@ -191,7 +212,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
 
         if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
         {
-            EnableInput(PC); // keep your hotkeys alive
+            EnableInput(PC); // keep hotkeys alive
             PC->bShowMouseCursor = true; PC->bEnableClickEvents = true; PC->bEnableMouseOverEvents = true;
             FInputModeGameAndUI Mode; Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); Mode.SetHideCursorDuringCapture(false);
             PC->SetInputMode(Mode);
@@ -216,9 +237,13 @@ void ASimulationRobotPawn::TogglePatrolMode()
 }
 
 void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
-void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode)  TogglePatrolMode(); }
+void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode) TogglePatrolMode(); }
 
-void ASimulationRobotPawn::ToggleLights() { bLightsOn = !bLightsOn; if (Headlight) Headlight->SetVisibility(bLightsOn); }
+void ASimulationRobotPawn::ToggleLights()
+{
+    bLightsOn = !bLightsOn;
+    if (Headlight) Headlight->SetVisibility(bLightsOn);
+}
 
 void ASimulationRobotPawn::ChangeView()
 {
@@ -229,11 +254,16 @@ void ASimulationRobotPawn::ChangeView()
         FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
         if (bUsingAerialView && AerialCamera)
         {
-            AerialCamera->SetActive(true); ThirdPersonCamera->SetActive(false); PC->SetViewTarget(this, Params);
+            AerialCamera->SetActive(true);
+            ThirdPersonCamera->SetActive(false);
+            PC->SetViewTarget(this, Params); // pawn calc camera picks the active cam
         }
         else
         {
-            ThirdPersonCamera->SetActive(true); AerialCamera->SetActive(false); EnsureViewTargetProxy(); if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
+            ThirdPersonCamera->SetActive(true);
+            AerialCamera->SetActive(false);
+            EnsureViewTargetProxy();
+            if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
         }
     }
 }
@@ -260,12 +290,14 @@ void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingRes
 void ASimulationRobotPawn::AdvanceToNextPatrolTarget()
 {
     if (!AICon) return;
-    const bool bDynamic = PatrolCheckpoints.Num() > 0;
+
+    const bool  bDynamic = (PatrolCheckpoints.Num() > 0);
     const int32 Count = bDynamic ? PatrolCheckpoints.Num() : Waypoints.Num();
     if (Count <= 0) return;
 
     const int32 Next = (CurrentWPIndex + 1) % Count;
-    if (Next == CurrentWPIndex) return;
+    if (Next == CurrentWPIndex) return; // single-point guard
+
     CurrentWPIndex = Next;
     IssueMoveToCurrentTarget();
 }
@@ -276,26 +308,33 @@ void ASimulationRobotPawn::IssueMoveToCurrentTarget()
 
     FAIMoveRequest Req;
     Req.SetUsePathfinding(true);
-    Req.SetAllowPartialPath(false);     // stay on navmesh
+    Req.SetAllowPartialPath(false);
     Req.SetAcceptanceRadius(AcceptanceRadius);
 
-    if (PatrolCheckpoints.Num() > 0)      Req.SetGoalLocation(PatrolCheckpoints[CurrentWPIndex]);
-    else if (Waypoints.Num() > 0)         Req.SetGoalActor(Waypoints[CurrentWPIndex]);
+    if (PatrolCheckpoints.Num() > 0) Req.SetGoalLocation(PatrolCheckpoints[CurrentWPIndex]);
+    else if (Waypoints.Num() > 0)    Req.SetGoalActor(Waypoints[CurrentWPIndex]);
 
     AICon->MoveTo(Req);
 }
 
-// cameras
+// --- cameras ---
 void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 {
     bUsingAerialView = bUseAerial;
+
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
         ThirdPersonCamera->SetActive(!bUsingAerialView);
         AerialCamera->SetActive(bUsingAerialView);
+
         FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
-        if (bUseAerial && AerialCamera) PC->SetViewTarget(this, Params);
-        else { EnsureViewTargetProxy(); if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params); }
+        if (bUseAerial && AerialCamera)
+            PC->SetViewTarget(this, Params);
+        else
+        {
+            EnsureViewTargetProxy();
+            if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
+        }
     }
 }
 
@@ -310,9 +349,11 @@ void ASimulationRobotPawn::ForceThirdPersonCamera()
 void ASimulationRobotPawn::EnsureViewTargetProxy()
 {
     if (IsValid(ViewTargetProxy)) return;
+
     if (UWorld* W = GetWorld())
     {
-        FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
         ViewTargetProxy = W->SpawnActor<ACameraActor>(GetActorLocation(), GetActorRotation(), Params);
 
         if (ViewTargetProxy && SpringArm)
@@ -325,13 +366,14 @@ void ASimulationRobotPawn::EnsureViewTargetProxy()
     }
 }
 
-// checkpoints
+// --- checkpoints ---
 void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& Locs)
 {
-    PatrolCheckpoints = Locs; CurrentWPIndex = 0;
+    PatrolCheckpoints = Locs;
+    CurrentWPIndex = 0;
 }
 
-// screen → world
+// --- screen → world ---
 bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& WorldLocation)
 {
     if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
@@ -348,10 +390,11 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& W
 
             if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
             {
-                WorldLocation = Hit.Location; return true;
+                WorldLocation = Hit.Location;
+                return true;
             }
 
-            // fallback to Z=0 plane
+            // fallback to Z=0 plane if nothing hit
             if (!FMath::IsNearlyZero(WorldDir.Z))
             {
                 const float T = -Start.Z / WorldDir.Z;
@@ -362,26 +405,83 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& W
     return false;
 }
 
-// threats
-void ASimulationRobotPawn::OnThreatBegin(UPrimitiveComponent*, AActor* OtherActor, UPrimitiveComponent*, int32, bool, const FHitResult&)
+// --- threats ---
+void ASimulationRobotPawn::OnThreatBegin(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
+    UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/,
+    bool /*bFromSweep*/, const FHitResult& /*SweepResult*/)
 {
     if (OtherActor && OtherActor != this) NearbyThreats.Add(OtherActor);
 }
-void ASimulationRobotPawn::OnThreatEnd(UPrimitiveComponent*, AActor* OtherActor, UPrimitiveComponent*, int32)
+
+void ASimulationRobotPawn::OnThreatEnd(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
+    UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/)
 {
     if (OtherActor) NearbyThreats.Remove(OtherActor);
 }
+
 void ASimulationRobotPawn::DrawThreatDebug()
 {
     for (TWeakObjectPtr<AActor> T : NearbyThreats)
     {
         if (!T.IsValid()) continue;
-        FBox B = T->GetComponentsBoundingBox(true);
+        const FBox B = T->GetComponentsBoundingBox(true);
         DrawDebugBox(GetWorld(), B.GetCenter(), B.GetExtent(), FQuat::Identity, FColor::Red, false, 0.f, 0, 2.f);
 
         FString Label = TEXT("Threat");
-        if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>()) Label = TC->ThreatLabel.ToString();
+        if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>())
+            Label = TC->ThreatLabel.ToString();
 
         DrawDebugString(GetWorld(), B.GetCenter() + FVector(0, 0, B.GetExtent().Z + 50.f), Label, nullptr, FColor::Red, 0.f, true);
     }
+}
+
+void ASimulationRobotPawn::UpdateThreatOverlay()
+{
+    if (!ThreatOverlayWidget) return;
+
+    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+    if (!PC) return;
+
+    TArray<FThreatScreenBox> Boxes;
+
+    for (TWeakObjectPtr<AActor> T : NearbyThreats)
+    {
+        if (!T.IsValid()) continue;
+
+        const FBox Bounds = T->GetComponentsBoundingBox(true);
+        const FVector Min = Bounds.Min;
+        const FVector Max = Bounds.Max;
+
+        const FVector C[8] = {
+            {Min.X,Min.Y,Min.Z},{Max.X,Min.Y,Min.Z},{Max.X,Max.Y,Min.Z},{Min.X,Max.Y,Min.Z},
+            {Min.X,Min.Y,Max.Z},{Max.X,Min.Y,Max.Z},{Max.X,Max.Y,Max.Z},{Min.X,Max.Y,Max.Z}
+        };
+
+        FVector2D MinS(FLT_MAX, FLT_MAX), MaxS(-FLT_MAX, -FLT_MAX);
+        bool bAny = false;
+
+        for (int i = 0; i < 8; ++i)
+        {
+            FVector2D S;
+            if (PC->ProjectWorldLocationToScreen(C[i], S, /*bPlayerViewportRelative*/ true))
+            {
+                bAny = true;
+                MinS.X = FMath::Min(MinS.X, S.X);
+                MinS.Y = FMath::Min(MinS.Y, S.Y);
+                MaxS.X = FMath::Max(MaxS.X, S.X);
+                MaxS.Y = FMath::Max(MaxS.Y, S.Y);
+            }
+        }
+        if (!bAny) continue;
+
+        FThreatScreenBox B; B.Min = MinS; B.Max = MaxS;
+        if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>())
+            B.Label = FText::FromName(TC->ThreatLabel);
+        else
+            B.Label = FText::FromString(TEXT("Threat"));
+
+        Boxes.Add(B);
+    }
+
+    ThreatOverlayWidget->SetBoxes(Boxes);
 }

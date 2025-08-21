@@ -14,10 +14,11 @@ class AWaypoint;
 class AAIController;
 class ACameraActor;
 class UThreatComponent;
+class UThreatBoxesWidget;   // overlay widget (C++ class you added)
 
 /**
  * Drivable/AI patrolling vehicle with third-person & aerial cameras,
- * waypoint patrol, UI hooks, and simple threat sensing.
+ * waypoint patrol, UI hooks, and simple threat sensing + on-screen boxes.
  */
 UCLASS()
 class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
@@ -39,7 +40,7 @@ public:
     // Force 3P camera active on the pawn
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ForceThirdPersonCamera();
 
-    // Stable actor to use as the PC's view target (attached to spring arm)
+    // Stable actor used by the PC as a view target (attached to SpringArm)
     UFUNCTION(BlueprintPure, Category = "Camera")
     AActor* GetThirdPersonViewTarget() const { return (AActor*)ViewTargetProxy; }
 
@@ -49,12 +50,13 @@ public:
 
     UFUNCTION(BlueprintImplementableEvent, Category = "UI")
     void OnUpdateHUD(float InSpeedKmh, bool bSpeedLimitedStatus, bool bLightsOnStatus,
-        bool bPatrolModeStatus, int32 ThreatsCount, int32 CurrentWPDisplayIndex, int32 TotalWPCount);
+        bool bPatrolModeStatus, int32 ThreatsCount,
+        int32 CurrentWPDisplayIndex, int32 TotalWPCount);
 
     // --- Planning helpers ---
-    UFUNCTION(BlueprintCallable, Category = "Camera") void SetAerialView(bool bUseAerial);
-    UFUNCTION(BlueprintPure, Category = "Patrol") bool IsPatrolling() const { return bIsPatrolMode; }
-    UFUNCTION(BlueprintCallable, Category = "Patrol") void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
+    UFUNCTION(BlueprintCallable, Category = "Camera")  void SetAerialView(bool bUseAerial);
+    UFUNCTION(BlueprintPure, Category = "Patrol")  bool IsPatrolling() const { return bIsPatrolMode; }
+    UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
     UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
 protected:
@@ -139,26 +141,25 @@ private:
     float ThreatSenseRadius = 1200.f;
 
     UPROPERTY(EditAnywhere, Category = "Threats")
-    bool bDrawThreatBoxes = true;
+    bool bDrawThreatBoxes = true;   // 3D debug boxes
+
+    // 2D overlay widget (red rectangles)
+    UPROPERTY(EditAnywhere, Category = "UI")
+    TSubclassOf<UThreatBoxesWidget> ThreatOverlayWidgetClass;
+    UPROPERTY() UThreatBoxesWidget* ThreatOverlayWidget = nullptr;
 
     TSet<TWeakObjectPtr<AActor>> NearbyThreats;
 
-    // NOTE: UFUNCTION params must be NAMED for UHT
+    // Overlap handlers (parameters must be named for UHT)
     UFUNCTION()
-    void OnThreatBegin(
-        UPrimitiveComponent* OverlappedComp,
-        AActor* OtherActor,
-        UPrimitiveComponent* OtherComp,
-        int32                OtherBodyIndex,
-        bool                 bFromSweep,
-        const FHitResult& SweepResult);
+    void OnThreatBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
+        UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
+        bool bFromSweep, const FHitResult& SweepResult);
 
     UFUNCTION()
-    void OnThreatEnd(
-        UPrimitiveComponent* OverlappedComp,
-        AActor* OtherActor,
-        UPrimitiveComponent* OtherComp,
-        int32                OtherBodyIndex);
+    void OnThreatEnd(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
+        UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
-    void DrawThreatDebug();
+    void DrawThreatDebug();     // 3D lines
+    void UpdateThreatOverlay(); // 2D rectangles
 };
