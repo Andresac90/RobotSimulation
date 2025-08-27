@@ -14,12 +14,8 @@ class AWaypoint;
 class AAIController;
 class ACameraActor;
 class UThreatComponent;
-class UThreatBoxesWidget;   // overlay widget (C++ class you added)
+class UThreatBoxesWidget;
 
-/**
- * Drivable/AI patrolling vehicle with third-person & aerial cameras,
- * waypoint patrol, UI hooks, and simple threat sensing + on-screen boxes.
- */
 UCLASS()
 class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
 {
@@ -29,33 +25,33 @@ public:
     ASimulationRobotPawn(const FObjectInitializer& ObjInit);
     virtual void Tick(float DeltaTime) override;
 
-    // --- Controls & camera ---
+    // Controls & camera
     UFUNCTION(BlueprintCallable, Category = "Control") void ToggleSpeedLimit();
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void TogglePatrolMode();
     UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();
     UFUNCTION(BlueprintCallable, Category = "Mission") void BeginMission();
     UFUNCTION(BlueprintCallable, Category = "Mission") void EndMission();
-    UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();
-
-    // Force 3P camera active on the pawn
+    UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();            // 3P <-> Aerial
+    UFUNCTION(BlueprintCallable, Category = "Camera")  void ToggleVehicleCamera();   // 3P <-> Interior
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ForceThirdPersonCamera();
 
-    // Stable actor used by the PC as a view target (attached to SpringArm)
     UFUNCTION(BlueprintPure, Category = "Camera")
     AActor* GetThirdPersonViewTarget() const { return (AActor*)ViewTargetProxy; }
 
-    // --- HUD data ---
+    // HUD
     UPROPERTY(BlueprintReadOnly, Category = "Stats") float SpeedKmh = 0.f;
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0")) float MaxSpeedKmh = 5.f;
 
     UFUNCTION(BlueprintImplementableEvent, Category = "UI")
     void OnUpdateHUD(float InSpeedKmh, bool bSpeedLimitedStatus, bool bLightsOnStatus,
-        bool bPatrolModeStatus, int32 ThreatsCount,
-        int32 CurrentWPDisplayIndex, int32 TotalWPCount);
+        bool bPatrolModeStatus, int32 ThreatsCount, int32 CurrentWPDisplayIndex, int32 TotalWPCount);
 
-    // --- Planning helpers ---
+    UFUNCTION(BlueprintPure, Category = "Threats")
+    int32 GetThreatCount() const { return NearbyThreats.Num(); }
+
+    // Planning helpers
     UFUNCTION(BlueprintCallable, Category = "Camera")  void SetAerialView(bool bUseAerial);
-    UFUNCTION(BlueprintPure, Category = "Patrol")  bool IsPatrolling() const { return bIsPatrolMode; }
+    UFUNCTION(BlueprintPure, Category = "Patrol")    bool IsPatrolling() const { return bIsPatrolMode; }
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
     UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
@@ -78,10 +74,58 @@ protected:
     void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
     void ApplySpeedLimit();
     void AdvanceToNextPatrolTarget();
+
+    void BuildAndFollowCenterPathTo(const FVector& GoalLocation);
+    void FollowNextSubPoint();
     void IssueMoveToCurrentTarget();
 
 private:
-    // --- Patrol / AI state ---
+    // ---------- UI / Input mode ----------
+    void ApplyAlwaysInteractiveInput(APlayerController* PC); // mouse always visible + click events
+    void InstallAuxInput(APlayerController* PC);             // keep key binds alive while AI possesses
+    void RemoveAuxInput(APlayerController* PC);
+    void BindCommonInputs(class UInputComponent* IC);
+
+    // Try to recover components if a BP child renamed/removed them
+    void ResolveCriticalComponents();
+
+    // ---------- Cameras ----------
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    USpringArmComponent* SpringArm = nullptr;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UCameraComponent* ThirdPersonCamera = nullptr;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
+    UCameraComponent* AerialCamera = nullptr;
+
+    // Interior camera (yaw only, via Turn axis)
+    UPROPERTY(VisibleAnywhere, Category = "Camera|Interior")
+    USceneComponent* InteriorPivot = nullptr;
+
+    UPROPERTY(VisibleAnywhere, Category = "Camera|Interior")
+    UCameraComponent* InteriorCamera = nullptr;
+
+    UPROPERTY(EditAnywhere, Category = "Camera")
+    float CameraBlendTime = 1.f;
+
+    // 3P camera distance & smoothing
+    UPROPERTY(EditAnywhere, Category = "Camera") float ThirdPersonArmLength = 1200.f;
+    UPROPERTY(EditAnywhere, Category = "Camera") bool  bEnableCamLag = true;
+    UPROPERTY(EditAnywhere, Category = "Camera", meta = (ClampMin = "1.0")) float CamLagSpeed = 10.f;
+
+    UPROPERTY(EditAnywhere, Category = "Camera|Control") float LookUpSpeed = 45.f;
+    UPROPERTY(EditAnywhere, Category = "Camera|Control") float TurnSpeed = 90.f;
+    UPROPERTY(EditAnywhere, Category = "Camera|Interior") float InteriorTurnSpeed = 120.f;
+
+    bool bUsingAerialView = false;
+    bool bUsingInteriorView = false;
+    bool bRotatingCamera = false;
+
+    UPROPERTY() ACameraActor* ViewTargetProxy = nullptr;
+    void EnsureViewTargetProxy();
+
+    // ---------- Patrol / AI ----------
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true"))
     bool bIsPatrolMode = false;
 
@@ -91,35 +135,24 @@ private:
     UPROPERTY() TArray<AActor*> Waypoints;
     UPROPERTY() AAIController* AICon = nullptr;
 
-    // --- Cameras ---
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
-    USpringArmComponent* SpringArm;
+    UPROPERTY(EditAnywhere, Category = "Patrol") float AcceptanceRadius = 100.f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
-    UCameraComponent* ThirdPersonCamera;
+    // Path smoothing (round corners so we don’t hug the inside)
+    UPROPERTY(EditAnywhere, Category = "Patrol|Path")
+    float CornerRadius = 400.f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
-    UCameraComponent* AerialCamera;
+    UPROPERTY(EditAnywhere, Category = "Patrol|Path")
+    float MinCornerAngleDeg = 10.f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true"))
-    float CameraBlendTime = 1.f;
+    // Dynamic checkpoints
+    TArray<FVector> PatrolCheckpoints;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera|Control", meta = (AllowPrivateAccess = "true"))
-    float LookUpSpeed = 45.f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera|Control", meta = (AllowPrivateAccess = "true"))
-    float TurnSpeed = 90.f;
-
-    bool bUsingAerialView = false;
-    bool bRotatingCamera = false;
-
-    // Stable Actor used as PC’s view target (attached to SpringArm)
-    UPROPERTY() ACameraActor* ViewTargetProxy = nullptr;
-    void EnsureViewTargetProxy();
-
-    // --- Lights / speed ---
+    // ---------- Lights / speed ----------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
-    USpotLightComponent* Headlight;
+    USpotLightComponent* HeadlightLeft = nullptr;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
+    USpotLightComponent* HeadlightRight = nullptr;
 
     UPROPERTY(BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     bool bLightsOn = true;
@@ -127,30 +160,16 @@ private:
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true"))
     bool bSpeedLimited = false;
 
-    UPROPERTY(EditAnywhere, Category = "Patrol")
-    float AcceptanceRadius = 100.f;
+    // ---------- Threat sensing ----------
+    UPROPERTY(VisibleAnywhere, Category = "Threats") USphereComponent* ThreatSensor = nullptr;
+    UPROPERTY(EditAnywhere, Category = "Threats")  float ThreatSenseRadius = 1200.f;
+    UPROPERTY(EditAnywhere, Category = "Threats")  bool  bDrawThreatBoxes = true;
 
-    // Dynamic checkpoints
-    TArray<FVector> PatrolCheckpoints;
-
-    // --- Threat sensing ---
-    UPROPERTY(VisibleAnywhere, Category = "Threats")
-    USphereComponent* ThreatSensor;
-
-    UPROPERTY(EditAnywhere, Category = "Threats")
-    float ThreatSenseRadius = 1200.f;
-
-    UPROPERTY(EditAnywhere, Category = "Threats")
-    bool bDrawThreatBoxes = true;   // 3D debug boxes
-
-    // 2D overlay widget (red rectangles)
-    UPROPERTY(EditAnywhere, Category = "UI")
-    TSubclassOf<UThreatBoxesWidget> ThreatOverlayWidgetClass;
+    UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UThreatBoxesWidget> ThreatOverlayWidgetClass;
     UPROPERTY() UThreatBoxesWidget* ThreatOverlayWidget = nullptr;
 
     TSet<TWeakObjectPtr<AActor>> NearbyThreats;
 
-    // Overlap handlers (parameters must be named for UHT)
     UFUNCTION()
     void OnThreatBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
         UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
@@ -160,6 +179,17 @@ private:
     void OnThreatEnd(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
         UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
-    void DrawThreatDebug();     // 3D lines
-    void UpdateThreatOverlay(); // 2D rectangles
+    void DrawThreatDebug();
+    void UpdateThreatOverlay();
+
+    // Center-path follow (smoothed points)
+    TArray<FVector> ActivePathPoints;
+    int32 ActivePathIndex = INDEX_NONE;
+    bool  bFollowingSubPath = false;
+
+    // helpers
+    void SmoothCorners(const TArray<FVector>& InPoints, TArray<FVector>& OutPoints) const;
+
+    // Aux input to keep keybinds when AI possesses
+    UPROPERTY() UInputComponent* AuxInput = nullptr;
 };
