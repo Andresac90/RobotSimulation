@@ -13,7 +13,8 @@ public class RobotSimulation : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[] {
             "Slate",
-            "SlateCore"
+            "SlateCore",
+            "EngineSettings"
         });
     }
 }

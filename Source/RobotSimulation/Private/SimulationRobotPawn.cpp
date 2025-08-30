@@ -1,13 +1,9 @@
 ﻿#include "SimulationRobotPawn.h"
 #include "GM_Simulation.h"
-#include "PatrolVehicleMovementComponent.h"
-#include "RobotAIController.h"
 
 #include "Kismet/GameplayStatics.h"
-#include "Navigation/PathFollowingComponent.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "GameFramework/PlayerController.h"
-#include "AIController.h"
 #include "Camera/CameraActor.h"
 #include "Waypoint.h"
 
@@ -16,18 +12,20 @@
 
 #include "DrawDebugHelpers.h"
 #include "Components/InputComponent.h"
-#include "ThreatComponent.h"
+#include "Blueprint/UserWidget.h"
 #include "ThreatBoxesWidget.h"
 #include "ThreatScreenBox.h"
+#include "ThreatComponent.h"
+#include "Components/PrimitiveComponent.h"
 
 #define LOG_PTR(Name, Ptr) UE_LOG(LogTemp, Log, TEXT("[RobotPawn] %s: %s"), TEXT(Name), Ptr ? *Ptr->GetName() : TEXT("<null>"))
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
-    : Super(ObjInit.SetDefaultSubobjectClass<UPatrolVehicleMovementComponent>(AWheeledVehiclePawn::VehicleMovementComponentName))
+    : Super(ObjInit)
 {
     PrimaryActorTick.bCanEverTick = true;
 
-    // Spring arm + 3P camera (farther + smooth)
+    // ---------- Third-person camera ----------
     SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
     SpringArm->SetupAttachment(RootComponent);
     SpringArm->TargetArmLength = ThirdPersonArmLength;
@@ -39,23 +37,43 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     ThirdPersonCamera->SetupAttachment(SpringArm);
     ThirdPersonCamera->bUsePawnControlRotation = false;
 
-    // Interior camera (yaw only via InteriorPivot)
+    // ---------- Camera Feeds for UI ----------
+    // 360 feed (interior pivot with auto-pan)
     InteriorPivot = CreateDefaultSubobject<USceneComponent>(TEXT("InteriorPivot"));
     InteriorPivot->SetupAttachment(RootComponent);
-    InteriorPivot->SetRelativeLocation(FVector(0, 0, 120.f)); // adjust to car cabin
-    InteriorCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("InteriorCam"));
-    InteriorCamera->SetupAttachment(InteriorPivot);
-    InteriorCamera->bUsePawnControlRotation = false;
-    InteriorCamera->SetAutoActivate(false);
+    InteriorPivot->SetRelativeLocation(FVector(0, 0, 120.f));
 
-    // Aerial camera
+    Cam360Capture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("Cam360Capture"));
+    Cam360Capture->SetupAttachment(InteriorPivot);
+    Cam360Capture->FOVAngle = 90.f;
+    Cam360Capture->bCaptureEveryFrame = true;
+    Cam360Capture->ProjectionType = ECameraProjectionMode::Perspective;
+
+    // Rear camera (looks backward)
+    RearCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("RearCapture"));
+    RearCapture->SetupAttachment(RootComponent);
+    RearCapture->SetRelativeLocation(FVector(-180.f, 0.f, 120.f));
+    RearCapture->SetRelativeRotation(FRotator(0.f, 180.f, 0.f));
+    RearCapture->FOVAngle = 90.f;
+    RearCapture->bCaptureEveryFrame = true;
+
+    // Side camera (looks left by default)
+    SideCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("SideCapture"));
+    SideCapture->SetupAttachment(RootComponent);
+    SideCapture->SetRelativeLocation(FVector(0.f, -140.f, 120.f));
+    SideCapture->SetRelativeRotation(FRotator(0.f, -90.f, 0.f));
+    SideCapture->FOVAngle = 90.f;
+    SideCapture->bCaptureEveryFrame = true;
+
+    // ---------- Aerial camera ----------
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
     AerialCamera->SetupAttachment(RootComponent);
     AerialCamera->SetRelativeLocation(FVector(0, 0, 5000));
     AerialCamera->SetRelativeRotation(FRotator(-90, 0, 0));
     AerialCamera->SetAutoActivate(false);
 
-    // Two headlights
+    // ---------- Lights ----------
+    // Front white LEDs (manual only via ToggleLights)
     HeadlightLeft = CreateDefaultSubobject<USpotLightComponent>(TEXT("HeadlightLeft"));
     HeadlightRight = CreateDefaultSubobject<USpotLightComponent>(TEXT("HeadlightRight"));
     HeadlightLeft->SetupAttachment(RootComponent);
@@ -64,8 +82,24 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     HeadlightRight->SetRelativeLocation(FVector(120.f, 40.f, 40.f));
     HeadlightLeft->Intensity = 5000.f;
     HeadlightRight->Intensity = 5000.f;
+    HeadlightLeft->SetVisibility(false);
+    HeadlightRight->SetVisibility(false);
 
-    // Threat sensor sphere
+    // Rear red brake lights (automatic only)
+    TailLightLeft = CreateDefaultSubobject<USpotLightComponent>(TEXT("TailLightLeft"));
+    TailLightRight = CreateDefaultSubobject<USpotLightComponent>(TEXT("TailLightRight"));
+    TailLightLeft->SetupAttachment(RootComponent);
+    TailLightRight->SetupAttachment(RootComponent);
+    TailLightLeft->SetRelativeLocation(FVector(-120.f, -40.f, 40.f));
+    TailLightRight->SetRelativeLocation(FVector(-120.f, 40.f, 40.f));
+    TailLightLeft->SetLightColor(FLinearColor(1.f, 0.05f, 0.05f));
+    TailLightRight->SetLightColor(FLinearColor(1.f, 0.05f, 0.05f));
+    TailLightLeft->Intensity = 0.f;
+    TailLightRight->Intensity = 0.f;
+    TailLightLeft->SetVisibility(false);
+    TailLightRight->SetVisibility(false);
+
+    // ---------- Threat sensor ----------
     ThreatSensor = CreateDefaultSubobject<USphereComponent>(TEXT("ThreatSensor"));
     ThreatSensor->SetupAttachment(RootComponent);
     ThreatSensor->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -73,10 +107,8 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     ThreatSensor->SetCollisionResponseToAllChannels(ECR_Overlap);
     ThreatSensor->SetSphereRadius(ThreatSenseRadius);
 
-    // Player controls by default; AI only when patrolling
     AutoPossessPlayer = EAutoReceiveInput::Player0;
     AutoPossessAI = EAutoPossessAI::Disabled;
-    AIControllerClass = ARobotAIController::StaticClass();
 }
 
 void ASimulationRobotPawn::ResolveCriticalComponents()
@@ -101,7 +133,11 @@ void ASimulationRobotPawn::ResolveCriticalComponents()
     }
 
     if (!HeadlightLeft)  HeadlightLeft = FindComponentByClass<USpotLightComponent>();
-    if (!HeadlightRight) HeadlightRight = HeadlightLeft; // fallback: single light setups
+    if (!HeadlightRight) HeadlightRight = HeadlightLeft;
+
+    if (!TailLightLeft)  TailLightLeft = FindComponentByClass<USpotLightComponent>();
+    if (!TailLightRight) TailLightRight = TailLightLeft;
+
     if (!ThreatSensor)   ThreatSensor = FindComponentByClass<USphereComponent>();
 }
 
@@ -110,19 +146,26 @@ void ASimulationRobotPawn::BeginPlay()
     Super::BeginPlay();
 
     ResolveCriticalComponents();
-    LOG_PTR("SpringArm", SpringArm);
-    LOG_PTR("ThirdPersonCamera", ThirdPersonCamera);
-    LOG_PTR("AerialCamera", AerialCamera);
-    LOG_PTR("HeadlightLeft", HeadlightLeft);
-    LOG_PTR("HeadlightRight", HeadlightRight);
-    LOG_PTR("ThreatSensor", ThreatSensor);
 
-    if (SpringArm)
-    {
-        SpringArm->TargetArmLength = ThirdPersonArmLength;
-        SpringArm->bEnableCameraLag = bEnableCamLag;
-        SpringArm->CameraLagSpeed = CamLagSpeed;
-    }
+    // ---------- Create RTs for the three feeds ----------
+    Cam360RT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Cam360"));
+    Cam360RT->InitAutoFormat(512, 288);
+    Cam360RT->ClearColor = FLinearColor::Black;
+    Cam360RT->TargetGamma = 2.2f;
+
+    RearRT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Rear"));
+    RearRT->InitAutoFormat(512, 288);
+    RearRT->ClearColor = FLinearColor::Black;
+    RearRT->TargetGamma = 2.2f;
+
+    SideRT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Side"));
+    SideRT->InitAutoFormat(512, 288);
+    SideRT->ClearColor = FLinearColor::Black;
+    SideRT->TargetGamma = 2.2f;
+
+    if (Cam360Capture) Cam360Capture->TextureTarget = Cam360RT;
+    if (RearCapture)   RearCapture->TextureTarget = RearRT;
+    if (SideCapture)   SideCapture->TextureTarget = SideRT;
 
     if (AGM_Simulation* GM = GetWorld()->GetAuthGameMode<AGM_Simulation>())
         GM->NotifyRobotReady(this);
@@ -130,12 +173,18 @@ void ASimulationRobotPawn::BeginPlay()
     ForceThirdPersonCamera();
     EnsureViewTargetProxy();
 
+    // Always show the mouse + allow UI clicks
     APlayerController* PC = Cast<APlayerController>(GetController());
     if (!PC) PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
-
     if (PC)
     {
-        ApplyAlwaysInteractiveInput(PC); // mouse always ON; keys & clicks active
+        ApplyAlwaysInteractiveInput(PC);
+
+        if (HUDWidgetClass)
+        {
+            HUDWidget = CreateWidget<UUserWidget>(PC, HUDWidgetClass);
+            if (HUDWidget) HUDWidget->AddToViewport(100);
+        }
 
         if (ThreatOverlayWidgetClass)
         {
@@ -144,7 +193,7 @@ void ASimulationRobotPawn::BeginPlay()
         }
     }
 
-    // Designer waypoints
+    // Waypoints (optional fallback)
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWaypoint::StaticClass(), Waypoints);
     Waypoints.Sort([](const AActor& A, const AActor& B)
         {
@@ -160,6 +209,10 @@ void ASimulationRobotPawn::BeginPlay()
         ThreatSensor->OnComponentBeginOverlap.AddDynamic(this, &ASimulationRobotPawn::OnThreatBegin);
         ThreatSensor->OnComponentEndOverlap.AddDynamic(this, &ASimulationRobotPawn::OnThreatEnd);
     }
+
+    // Start with headlights off (manual control) and brake lights off
+    SetHeadlightsOn(false);
+    UpdateBrakeLightState(false);
 }
 
 void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -173,66 +226,121 @@ void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
     Super::EndPlay(EndPlayReason);
 }
 
+static float KmhFromCms(float CmPerSec) { return CmPerSec * 0.036f; }
+static float CmpsFromKmh(float Kmh) { return Kmh / 0.036f; }
+
 void ASimulationRobotPawn::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    SpeedKmh = 0.f;
+    // Speed
     if (auto* M = GetVehicleMovementComponent())
         SpeedKmh = M->GetForwardSpeed() * 0.036f;
+    else
+        SpeedKmh = 0.f;
+
+    // Strict clamp: NEVER leave navmesh
+    if (bHardClampToNavmesh)
+    {
+        if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+        {
+            FNavLocation Projected;
+            const FVector Extent(300.f, 300.f, 600.f);
+            if (NavSys->ProjectPointToNavigation(GetActorLocation(), Projected, Extent))
+            {
+                const float Dist2D = FVector::Dist2D(Projected.Location, GetActorLocation());
+
+                if (Dist2D > StrictClampDistance)
+                {
+                    SetActorLocation(Projected.Location, /*bSweep=*/true);
+                }
+                else if (Dist2D > MaxOffNavDistance)
+                {
+                    const FVector NewLoc = FMath::VInterpTo(GetActorLocation(), Projected.Location, DeltaTime, 24.f);
+                    SetActorLocation(NewLoc, /*bSweep=*/true);
+                }
+            }
+        }
+    }
+
+    // 360 auto-pan (left <-> right)
+    Cam360Time += DeltaTime;
+    if (InteriorPivot)
+    {
+        const float RadPerSec = FMath::DegreesToRadians(Cam360YawSpeed);
+        const float Yaw = FMath::Sin(Cam360Time * RadPerSec) * Cam360YawAmplitude;
+        FRotator R = InteriorPivot->GetRelativeRotation();
+        R.Yaw = Yaw;
+        InteriorPivot->SetRelativeRotation(R);
+    }
 
     if (bDrawThreatBoxes) DrawThreatDebug();
     UpdateThreatOverlay();
 
-    const int32 Total = (PatrolCheckpoints.Num() > 0) ? PatrolCheckpoints.Num() : Waypoints.Num();
-    OnUpdateHUD(SpeedKmh, bSpeedLimited, bLightsOn, bIsPatrolMode,
-        NearbyThreats.Num(), Total > 0 ? CurrentWPIndex + 1 : 0, Total);
+    if (bIsPatrolMode)
+        DriveAlongPath(DeltaTime);
 }
+
+// ----------------- Lights helpers -----------------
+void ASimulationRobotPawn::ApplyHeadlightVisibility()
+{
+    if (HeadlightLeft)  HeadlightLeft->SetVisibility(bHeadlightsOn);
+    if (HeadlightRight) HeadlightRight->SetVisibility(bHeadlightsOn);
+}
+
+void ASimulationRobotPawn::SetHeadlightsOn(bool bOn)
+{
+    bHeadlightsOn = bOn;
+    ApplyHeadlightVisibility();
+}
+
+void ASimulationRobotPawn::UpdateBrakeLightState(bool bBraking)
+{
+    bBrakingNow = bBraking;
+
+    const float BrakeIntensity = bBraking ? 12000.f : 0.f;
+
+    if (TailLightLeft)
+    {
+        TailLightLeft->SetIntensity(BrakeIntensity);
+        TailLightLeft->SetVisibility(bBraking);
+    }
+    if (TailLightRight)
+    {
+        TailLightRight->SetIntensity(BrakeIntensity);
+        TailLightRight->SetVisibility(bBraking);
+    }
+}
+// --------------------------------------------------
 
 void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
 {
     Super::SetupPlayerInputComponent(P);
-
     BindCommonInputs(P);
-
-    UE_LOG(LogTemp, Log, TEXT("[RobotPawn] Input bindings set on main InputComponent."));
 }
 
 void ASimulationRobotPawn::BindCommonInputs(UInputComponent* IC)
 {
     if (!IC) return;
-
-    // Axis
     IC->BindAxis("MoveForward", this, &ASimulationRobotPawn::ThrottleInput);
     IC->BindAxis("MoveRight", this, &ASimulationRobotPawn::SteeringInput);
     IC->BindAxis("Handbrake", this, &ASimulationRobotPawn::HandbrakeInput);
     IC->BindAxis("LookUp", this, &ASimulationRobotPawn::LookUp);
     IC->BindAxis("Turn", this, &ASimulationRobotPawn::Turn);
-
-    // Actions
     IC->BindAction("RotateCamera", IE_Pressed, this, &ASimulationRobotPawn::StartCameraRotate);
     IC->BindAction("RotateCamera", IE_Released, this, &ASimulationRobotPawn::StopCameraRotate);
-    IC->BindAction("TogglePatrol", IE_Pressed, this, &ASimulationRobotPawn::TogglePatrolMode);
-    IC->BindAction("ToggleSpeed", IE_Pressed, this, &ASimulationRobotPawn::ToggleSpeedLimit);
-    IC->BindAction("ToggleLights", IE_Pressed, this, &ASimulationRobotPawn::ToggleLights);
-    IC->BindAction("ChangeView", IE_Pressed, this, &ASimulationRobotPawn::ChangeView);
-    IC->BindAction("ToggleVehicleCamera", IE_Pressed, this, &ASimulationRobotPawn::ToggleVehicleCamera);
 }
 
 void ASimulationRobotPawn::InstallAuxInput(APlayerController* PC)
 {
     if (!PC || AuxInput) return;
-
     AuxInput = NewObject<UInputComponent>(this, TEXT("AuxInputComponent"));
     AuxInput->bBlockInput = false;
-    AuxInput->Priority = 10; // above default
+    AuxInput->Priority = 10;
     AuxInput->RegisterComponent();
     BindCommonInputs(AuxInput);
     PC->PushInputComponent(AuxInput);
-
-    UE_LOG(LogTemp, Log, TEXT("[RobotPawn] Aux input installed (keys remain active while AI possesses)."));
 }
-
 void ASimulationRobotPawn::RemoveAuxInput(APlayerController* PC)
 {
     if (!PC || !AuxInput) return;
@@ -240,190 +348,169 @@ void ASimulationRobotPawn::RemoveAuxInput(APlayerController* PC)
     AuxInput->DestroyComponent();
     AuxInput = nullptr;
 }
-
 void ASimulationRobotPawn::ApplyAlwaysInteractiveInput(APlayerController* PC)
 {
     if (!PC) return;
-
     FInputModeGameAndUI Mode;
     Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
     Mode.SetHideCursorDuringCapture(false);
-    Mode.SetWidgetToFocus(nullptr); // keep focus on viewport so keys reach us
+    Mode.SetWidgetToFocus(nullptr);
     PC->SetInputMode(Mode);
-
     PC->bShowMouseCursor = true;
     PC->bEnableClickEvents = true;
     PC->bEnableMouseOverEvents = true;
 }
 
-// ----------------- input helpers -----------------
+// Input helpers (manual control when patrol is OFF)
 void ASimulationRobotPawn::ThrottleInput(float Val)
 {
-    if (bSpeedLimited && SpeedKmh >= MaxSpeedKmh) Val = 0.f;
-    if (!bIsPatrolMode)
-        if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
-            M->SetThrottleInput(Val);
-}
-void ASimulationRobotPawn::SteeringInput(float Val)
-{
-    if (!bIsPatrolMode)
-        if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
-            M->SetSteeringInput(Val);
-}
-void ASimulationRobotPawn::HandbrakeInput(float Val)
-{
-    if (auto* M = Cast<UPatrolVehicleMovementComponent>(GetVehicleMovementComponent()))
-        M->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
-}
-void ASimulationRobotPawn::StartCameraRotate() { bRotatingCamera = true; }
-void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
+    if (bIsPatrolMode) return;
 
-void ASimulationRobotPawn::LookUp(float V)
-{
-    if (bUsingInteriorView)
+    auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent());
+    if (!M) return;
+
+    const float fwdSpeed = SpeedKmh;
+    const bool bWantReverse = (Val < -KINDA_SMALL_NUMBER);
+    const float amt = FMath::Abs(Val);
+
+    // Forward speed limit (only for forward)
+    if (bSpeedLimited && !bWantReverse && fwdSpeed >= MaxSpeedKmh)
     {
-        // interior: no vertical look (horizontal only)
+        M->SetThrottleInput(0.f);
         return;
     }
 
-    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(FRotator(V * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
-}
-
-void ASimulationRobotPawn::Turn(float V)
-{
-    if (bUsingInteriorView)
+    if (bWantReverse)
     {
-        if (InteriorPivot && FMath::Abs(V) > KINDA_SMALL_NUMBER)
+        // If rolling forward, brake first
+        if (fwdSpeed > 1.0f && M->GetCurrentGear() >= 0)
         {
-            const float YawDelta = V * InteriorTurnSpeed * GetWorld()->DeltaTimeSeconds;
-            FRotator R = InteriorPivot->GetRelativeRotation();
-            R.Yaw = FMath::Fmod(R.Yaw + YawDelta, 360.f);
-            InteriorPivot->SetRelativeRotation(R);
+            M->SetBrakeInput(amt);
+            M->SetThrottleInput(0.f);
         }
-        return;
-    }
-
-    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
-        SpringArm->AddLocalRotation(FRotator(0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
-}
-
-// ----------------- modes -----------------
-void ASimulationRobotPawn::ToggleSpeedLimit()
-{
-    bSpeedLimited = !bSpeedLimited;
-    ApplySpeedLimit();
-}
-
-void ASimulationRobotPawn::ApplySpeedLimit()
-{
-    if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-        C->EngineSetup.MaxRPM = 3000.f; // gentle cap; braking handled in movement component
-}
-
-void ASimulationRobotPawn::TogglePatrolMode()
-{
-    UE_LOG(LogTemp, Log, TEXT("[RobotPawn] TogglePatrolMode pressed. Current bIsPatrolMode=%s"), bIsPatrolMode ? TEXT("true") : TEXT("false"));
-
-    bIsPatrolMode = !bIsPatrolMode;
-
-    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
-
-    if (bIsPatrolMode)
-    {
-        if (APlayerController* CurrPC = Cast<APlayerController>(GetController()))
-            CurrPC->UnPossess();
-
-        if (!AICon)
-        {
-            FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-            AICon = GetWorld()->SpawnActor<ARobotAIController>(ARobotAIController::StaticClass(), GetActorLocation(), GetActorRotation(), Params);
-        }
-        if (AICon) AICon->Possess(this);
-
-        if (AICon && AICon->GetPathFollowingComponent())
-        {
-            auto* PF = AICon->GetPathFollowingComponent();
-            PF->OnRequestFinished.RemoveAll(this);
-            PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
-        }
-
-        CurrentWPIndex = 0;
-
-        if (PatrolCheckpoints.Num() > 0)
-            BuildAndFollowCenterPathTo(PatrolCheckpoints[CurrentWPIndex]);
-        else if (Waypoints.Num() > 0)
-            BuildAndFollowCenterPathTo(Waypoints[CurrentWPIndex]->GetActorLocation());
         else
-            UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] No checkpoints/waypoints to patrol."));
-
-        if (PC)
         {
-            InstallAuxInput(PC);          // keep hotkeys alive
-            ApplyAlwaysInteractiveInput(PC); // mouse visible, clicks enabled during sim
+            if (M->GetCurrentGear() >= 0)
+                M->SetTargetGear(-1, true);
+            M->SetBrakeInput(0.f);
+            M->SetThrottleInput(amt); // throttle is positive; gear decides direction
         }
     }
     else
     {
-        ActivePathPoints.Reset();
-        ActivePathIndex = INDEX_NONE;
-        bFollowingSubPath = false;
+        // Forward
+        if (M->GetCurrentGear() < 0 && fwdSpeed < 1.0f)
+            M->SetTargetGear(1, true);
 
-        if (AICon)
+        M->SetBrakeInput(0.f);
+        M->SetThrottleInput(Val);
+    }
+}
+void ASimulationRobotPawn::SteeringInput(float Val)
+{
+    if (bIsPatrolMode) return;
+    if (auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+        M->SetSteeringInput(Val);
+}
+void ASimulationRobotPawn::HandbrakeInput(float Val)
+{
+    if (auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+        M->SetHandbrakeInput(Val > KINDA_SMALL_NUMBER);
+
+    // Braking state for brake lights (manual handbrake)
+    bHandbrakeActiveManual = (Val > KINDA_SMALL_NUMBER);
+    UpdateBrakeLightState(bHandbrakeActiveManual || bBrakingNow);
+}
+void ASimulationRobotPawn::StartCameraRotate() { bRotatingCamera = true; }
+void ASimulationRobotPawn::StopCameraRotate() { bRotatingCamera = false; }
+void ASimulationRobotPawn::LookUp(float V)
+{
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation(FRotator(V * LookUpSpeed * GetWorld()->DeltaTimeSeconds, 0, 0));
+}
+void ASimulationRobotPawn::Turn(float V)
+{
+    if (bRotatingCamera && !bUsingAerialView && SpringArm && FMath::Abs(V) > KINDA_SMALL_NUMBER)
+        SpringArm->AddLocalRotation(FRotator(0, V * TurnSpeed * GetWorld()->DeltaTimeSeconds, 0));
+}
+
+// Modes
+void ASimulationRobotPawn::ToggleSpeedLimit()
+{
+    bSpeedLimited = !bSpeedLimited;
+    if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+        C->EngineSetup.MaxRPM = 3000.f; // simple cap
+}
+void ASimulationRobotPawn::TogglePatrolMode()
+{
+    bIsPatrolMode = !bIsPatrolMode;
+    APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+
+    if (bIsPatrolMode)
+    {
+        SetCheckpointMeshesHidden(true); // hide visual markers
+        CurrentWPIndex = 0;
+
+        FVector Goal = GetActorLocation();
+        if (!PatrolCheckpoints.IsEmpty())             Goal = PatrolCheckpoints[0];
+        else if (Waypoints.Num() > 0 && Waypoints[0]) Goal = Waypoints[0]->GetActorLocation();
+
+        BuildPathTo(Goal);
+
+        if (PC) { InstallAuxInput(PC); ApplyAlwaysInteractiveInput(PC); }
+    }
+    else
+    {
+        SetCheckpointMeshesHidden(false);
+
+        ActivePathPoints.Reset();
+        ActivePathCumLen.Reset();
+        ActivePathTotalLen = 0.f;
+        CachedClosestSeg = 0;
+
+        if (auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
         {
-            if (auto* PF = AICon->GetPathFollowingComponent()) PF->OnRequestFinished.RemoveAll(this);
-            AICon->StopMovement(); AICon->UnPossess();
+            M->SetSteeringInput(0.f);
+            M->SetThrottleInput(0.f);
+            M->SetBrakeInput(0.f);
+            M->SetHandbrakeInput(true);
         }
 
         if (PC)
         {
             RemoveAuxInput(PC);
             PC->Possess(this);
-            ApplyAlwaysInteractiveInput(PC); // still want mouse visible while editing
+            ApplyAlwaysInteractiveInput(PC);
         }
     }
 }
-
 void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
-void ASimulationRobotPawn::EndMission() { if (bIsPatrolMode) TogglePatrolMode(); }
+void ASimulationRobotPawn::EndMission()
+{
+    if (bIsPatrolMode) TogglePatrolMode();
+    SetAerialView(true);
+}
+void ASimulationRobotPawn::EndSimulation()
+{
+    if (bIsPatrolMode) TogglePatrolMode();
+
+    PatrolCheckpoints.Reset();
+    ActivePathPoints.Reset();
+    ActivePathCumLen.Reset();
+    ActivePathTotalLen = 0.f;
+    CachedClosestSeg = 0;
+    CurrentWPIndex = 0;
+
+    SetAerialView(true);
+}
 
 void ASimulationRobotPawn::ToggleLights()
 {
-    bLightsOn = !bLightsOn;
-    if (HeadlightLeft)  HeadlightLeft->SetVisibility(bLightsOn);
-    if (HeadlightRight) HeadlightRight->SetVisibility(bLightsOn);
+    // FRONT white LEDs ONLY (manual)
+    SetHeadlightsOn(!bHeadlightsOn);
 }
-
-void ASimulationRobotPawn::ToggleVehicleCamera()
-{
-    // Toggle between 3rd-person and interior (independent from aerial)
-    bUsingInteriorView = !bUsingInteriorView;
-
-    if (auto* PC = Cast<APlayerController>(GetController()))
-    {
-        FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
-
-        if (bUsingInteriorView && InteriorCamera)
-        {
-            InteriorCamera->SetActive(true);
-            ThirdPersonCamera->SetActive(false);
-            AerialCamera->SetActive(false);
-            PC->SetViewTarget(this, Params); // pawn calc camera picks active interior cam
-        }
-        else
-        {
-            InteriorCamera->SetActive(false);
-            ThirdPersonCamera->SetActive(true);
-            if (bUsingAerialView) AerialCamera->SetActive(false);
-            EnsureViewTargetProxy();
-            PC->SetViewTarget(ViewTargetProxy ? ViewTargetProxy : (AActor*)this, Params);
-        }
-    }
-}
-
 void ASimulationRobotPawn::ChangeView()
 {
-    // 3rd-person <-> Aerial (interior is separate toggle)
     bUsingAerialView = !bUsingAerialView;
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
@@ -432,257 +519,45 @@ void ASimulationRobotPawn::ChangeView()
         {
             AerialCamera->SetActive(true);
             ThirdPersonCamera->SetActive(false);
-            InteriorCamera->SetActive(false);
             PC->SetViewTarget(this, Params);
         }
         else
         {
             ThirdPersonCamera->SetActive(true);
             AerialCamera->SetActive(false);
-            InteriorCamera->SetActive(false);
             EnsureViewTargetProxy();
             if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
         }
     }
 }
-
-void ASimulationRobotPawn::PossessedBy(AController* NewController)
-{
-    Super::PossessedBy(NewController);
-
-    AICon = Cast<AAIController>(NewController);
-    if (AICon && AICon->GetPathFollowingComponent())
-    {
-        auto* PF = AICon->GetPathFollowingComponent();
-        PF->OnRequestFinished.RemoveAll(this);
-        PF->OnRequestFinished.AddUObject(this, &ASimulationRobotPawn::OnMoveCompleted);
-    }
-}
-
-void ASimulationRobotPawn::OnMoveCompleted(FAIRequestID, const FPathFollowingResult& Result)
-{
-    if (bFollowingSubPath && AICon)
-    {
-        if (Result.IsSuccess())
-        {
-            if (ActivePathIndex != INDEX_NONE && ActivePathIndex + 1 < ActivePathPoints.Num())
-            {
-                ActivePathIndex++;
-                FollowNextSubPoint();
-                return;
-            }
-        }
-        bFollowingSubPath = false;
-        ActivePathPoints.Reset();
-        ActivePathIndex = INDEX_NONE;
-    }
-
-    if (!bIsPatrolMode || !AICon) return;
-    AdvanceToNextPatrolTarget();
-}
-
-void ASimulationRobotPawn::AdvanceToNextPatrolTarget()
-{
-    if (!AICon) return;
-
-    const bool  bDynamic = (PatrolCheckpoints.Num() > 0);
-    const int32 Count = bDynamic ? PatrolCheckpoints.Num() : Waypoints.Num();
-    if (Count <= 0) return;
-
-    const int32 Next = (CurrentWPIndex + 1) % Count;
-    if (Next == CurrentWPIndex) return;
-
-    CurrentWPIndex = Next;
-
-    if (PatrolCheckpoints.Num() > 0)
-        BuildAndFollowCenterPathTo(PatrolCheckpoints[CurrentWPIndex]);
-    else if (Waypoints.Num() > 0)
-        BuildAndFollowCenterPathTo(Waypoints[CurrentWPIndex]->GetActorLocation());
-}
-
-void ASimulationRobotPawn::IssueMoveToCurrentTarget()
-{
-    if (!AICon) return;
-
-    FAIMoveRequest Req;
-    Req.SetUsePathfinding(true);
-    Req.SetAllowPartialPath(false);
-    Req.SetAcceptanceRadius(AcceptanceRadius);
-
-    if (PatrolCheckpoints.Num() > 0)      Req.SetGoalLocation(PatrolCheckpoints[CurrentWPIndex]);
-    else if (Waypoints.Num() > 0)         Req.SetGoalActor(Waypoints[CurrentWPIndex]);
-
-    AICon->MoveTo(Req);
-}
-
-// ----- path smoothing & follow -----
-static FVector ClosestPointOnSegment(const FVector& A, const FVector& B, const FVector& P)
-{
-    const FVector AB = B - A;
-    const float AB2 = AB.SizeSquared();
-    if (AB2 <= KINDA_SMALL_NUMBER) return A;
-    const float T = FMath::Clamp(FVector::DotProduct(P - A, AB) / AB2, 0.f, 1.f);
-    return A + AB * T;
-}
-
-void ASimulationRobotPawn::SmoothCorners(const TArray<FVector>& InPoints, TArray<FVector>& Out) const
-{
-    Out.Reset();
-    if (InPoints.Num() <= 2)
-    {
-        Out = InPoints;
-        return;
-    }
-
-    Out.Add(InPoints[0]);
-
-    for (int32 i = 1; i < InPoints.Num() - 1; ++i)
-    {
-        const FVector Prev = InPoints[i - 1];
-        const FVector Curr = InPoints[i];
-        const FVector Next = InPoints[i + 1];
-
-        FVector InDir = (Curr - Prev);  float InLen = InDir.Size();  InDir = (InLen > 1.f) ? InDir / InLen : FVector::ForwardVector;
-        FVector OutDir = (Next - Curr); float OutLen = OutDir.Size(); OutDir = (OutLen > 1.f) ? OutDir / OutLen : FVector::ForwardVector;
-
-        const float AngleDeg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(InDir, OutDir), -1.f, 1.f)));
-        if (AngleDeg < MinCornerAngleDeg || (InLen < 1.f) || (OutLen < 1.f))
-        {
-            Out.Add(Curr);
-            continue;
-        }
-
-        const float R = FMath::Min3(CornerRadius, InLen * 0.45f, OutLen * 0.45f);
-        const FVector A = Curr - InDir * R; // before corner
-        const FVector B = Curr + OutDir * R; // after corner
-
-        Out.Add(A);
-        Out.Add(ClosestPointOnSegment(A, B, Curr + (InDir + OutDir).GetSafeNormal() * (R * 0.5f)));
-        Out.Add(B);
-    }
-
-    Out.Add(InPoints.Last());
-}
-
-void ASimulationRobotPawn::BuildAndFollowCenterPathTo(const FVector& GoalLocation)
-{
-    ActivePathPoints.Reset();
-    ActivePathIndex = INDEX_NONE;
-    bFollowingSubPath = false;
-
-    if (!AICon) return;
-
-    UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-    if (!NavSys) { IssueMoveToCurrentTarget(); return; }
-
-    // Project start & goal to navmesh
-    FNavLocation StartProj, GoalProj;
-    const FVector Extent(300.f, 300.f, 600.f);
-    const FVector StartLoc = GetActorLocation();
-    bool bStartOk = NavSys->ProjectPointToNavigation(StartLoc, StartProj, Extent);
-    bool bGoalOk = NavSys->ProjectPointToNavigation(GoalLocation, GoalProj, Extent);
-    if (!bStartOk || !bGoalOk)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] ProjectPointToNavigation failed (start:%d goal:%d)"), bStartOk, bGoalOk);
-        IssueMoveToCurrentTarget();
-        return;
-    }
-
-    UNavigationPath* Path = NavSys->FindPathToLocationSynchronously(GetWorld(), StartProj.Location, GoalProj.Location, this);
-    if (!Path || Path->PathPoints.Num() == 0)
-    {
-        IssueMoveToCurrentTarget();
-        return;
-    }
-
-    // raw points
-    TArray<FVector> Raw;
-    Raw.Reserve(Path->PathPoints.Num());
-    for (const FNavPathPoint& P : Path->PathPoints) Raw.Add(P.Location);
-
-    // smooth
-    TArray<FVector> Smoothed;
-    SmoothCorners(Raw, Smoothed);
-
-    // re-project every smoothed point to be safely inside navmesh
-    ActivePathPoints.Reset();
-    for (const FVector& P : Smoothed)
-    {
-        FNavLocation Pj;
-        if (NavSys->ProjectPointToNavigation(P, Pj, Extent)) ActivePathPoints.Add(Pj.Location);
-        else ActivePathPoints.Add(P); // fallback
-    }
-
-    ActivePathIndex = (ActivePathPoints.Num() > 1) ? 1 : 0;
-    bFollowingSubPath = true;
-    FollowNextSubPoint();
-}
-
-void ASimulationRobotPawn::FollowNextSubPoint()
-{
-    if (!AICon || ActivePathIndex == INDEX_NONE || ActivePathIndex >= ActivePathPoints.Num()) return;
-
-    // ensure each target point sits on navmesh
-    UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-    FVector Target = ActivePathPoints[ActivePathIndex];
-    if (NavSys)
-    {
-        FNavLocation Pj;
-        if (NavSys->ProjectPointToNavigation(Target, Pj, FVector(300, 300, 600)))
-            Target = Pj.Location;
-    }
-
-    FAIMoveRequest Req;
-    Req.SetUsePathfinding(false); // follow our smoothed list directly
-    Req.SetAllowPartialPath(false);
-    Req.SetAcceptanceRadius(FMath::Max(60.f, AcceptanceRadius * 0.6f));
-    Req.SetGoalLocation(Target);
-
-    AICon->MoveTo(Req);
-}
-
-// ----------------- cameras -----------------
 void ASimulationRobotPawn::SetAerialView(bool bUseAerial)
 {
     bUsingAerialView = bUseAerial;
-
     if (auto* PC = Cast<APlayerController>(GetController()))
     {
         if (ThirdPersonCamera) ThirdPersonCamera->SetActive(!bUsingAerialView);
         if (AerialCamera)      AerialCamera->SetActive(bUseAerial);
-        if (InteriorCamera)    InteriorCamera->SetActive(false);
-
         FViewTargetTransitionParams Params; Params.BlendTime = CameraBlendTime; Params.BlendFunction = VTBlend_Cubic;
-        if (bUseAerial && AerialCamera)
-            PC->SetViewTarget(this, Params);
-        else
-        {
-            EnsureViewTargetProxy();
-            if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params);
-        }
+        if (bUseAerial && AerialCamera) PC->SetViewTarget(this, Params);
+        else { EnsureViewTargetProxy(); if (ViewTargetProxy) PC->SetViewTarget(ViewTargetProxy, Params); }
     }
 }
-
 void ASimulationRobotPawn::ForceThirdPersonCamera()
 {
     bUsingAerialView = false;
-    bUsingInteriorView = false;
     if (ThirdPersonCamera) ThirdPersonCamera->SetActive(true);
     if (AerialCamera)      AerialCamera->SetActive(false);
-    if (InteriorCamera)    InteriorCamera->SetActive(false);
     EnsureViewTargetProxy();
 }
 
 void ASimulationRobotPawn::EnsureViewTargetProxy()
 {
     if (IsValid(ViewTargetProxy)) return;
-
     if (UWorld* W = GetWorld())
     {
         FActorSpawnParameters Params;
         Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
         ViewTargetProxy = W->SpawnActor<ACameraActor>(GetActorLocation(), GetActorRotation(), Params);
-
         if (ViewTargetProxy && SpringArm)
         {
             ViewTargetProxy->AttachToComponent(SpringArm, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
@@ -693,14 +568,361 @@ void ASimulationRobotPawn::EnsureViewTargetProxy()
     }
 }
 
-// ----------------- checkpoints -----------------
-void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& Locs)
+// -------- Path building --------
+static void AppendIfFar(TArray<FVector>& Points, const FVector& P, float MinDist)
 {
-    PatrolCheckpoints = Locs;
-    CurrentWPIndex = 0;
+    if (Points.Num() == 0 || FVector::DistSquared2D(Points.Last(), P) > FMath::Square(MinDist))
+    {
+        Points.Add(P);
+    }
 }
 
-// ----------------- screen → world -----------------
+bool ASimulationRobotPawn::ProjectToNav(const FVector& In, FVector& Out) const
+{
+    if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+    {
+        FNavLocation Pj;
+        const FVector Extent(300.f, 300.f, 600.f);
+        if (NavSys->ProjectPointToNavigation(In, Pj, Extent))
+        {
+            Out = Pj.Location; return true;
+        }
+    }
+    Out = In; return false;
+}
+
+void ASimulationRobotPawn::SmoothPathInPlace(TArray<FVector>& Pts, float Alpha)
+{
+    if (Pts.Num() < 3 || Alpha <= 0.f) return;
+    TArray<FVector> Copy = Pts;
+    for (int32 i = 1; i < Pts.Num() - 1; ++i)
+    {
+        Pts[i] = FMath::Lerp(Copy[i], (Copy[i - 1] + Copy[i + 1]) * 0.5f, FMath::Clamp(Alpha, 0.f, 0.95f));
+    }
+}
+
+bool ASimulationRobotPawn::BuildPathTo(const FVector& Goal)
+{
+    ActivePathPoints.Reset();
+    ActivePathCumLen.Reset();
+    ActivePathTotalLen = 0.f;
+    CachedClosestSeg = 0;
+
+    UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+    if (!NavSys) return false;
+
+    // project start/goal
+    FVector StartLoc = GetActorLocation(), StartP = StartLoc, GoalP = Goal;
+    ProjectToNav(StartLoc, StartP);
+    ProjectToNav(Goal, GoalP);
+
+    UNavigationPath* Path = NavSys->FindPathToLocationSynchronously(GetWorld(), StartP, GoalP, this);
+    if (!Path || Path->PathPoints.Num() < 2) return false;
+
+    // Densify + project each lerped point to navmesh (centerline-ish)
+    TArray<FVector> Dense;
+    AppendIfFar(Dense, Path->PathPoints[0], MinPointSpacing); // UE 5.3+ PathPoints are FVector
+
+    for (int32 i = 0; i < Path->PathPoints.Num() - 1; ++i)
+    {
+        const FVector A = Path->PathPoints[i];
+        const FVector B = Path->PathPoints[i + 1];
+
+        const float SegLen = FVector::Dist(A, B);
+        const int32 Steps = FMath::Max(1, FMath::CeilToInt(SegLen / FMath::Max(10.f, CorridorStep)));
+
+        for (int32 s = 1; s <= Steps; ++s)
+        {
+            const float T = (float)s / (float)Steps;
+            const FVector Raw = FMath::Lerp(A, B, T);
+            FVector P;
+            ProjectToNav(Raw, P);
+            AppendIfFar(Dense, P, MinPointSpacing);
+        }
+    }
+
+    // light smoothing to keep it centered/stable
+    SmoothPathInPlace(Dense, SmoothKernel);
+
+    ActivePathPoints = MoveTemp(Dense);
+    RecomputeCumulativeLength();
+
+    return ActivePathPoints.Num() >= 2;
+}
+
+void ASimulationRobotPawn::RecomputeCumulativeLength()
+{
+    ActivePathCumLen.SetNum(ActivePathPoints.Num());
+    float Acc = 0.f;
+    ActivePathCumLen[0] = 0.f;
+    for (int32 i = 1; i < ActivePathPoints.Num(); ++i)
+    {
+        Acc += FVector::Dist(ActivePathPoints[i - 1], ActivePathPoints[i]);
+        ActivePathCumLen[i] = Acc;
+    }
+    ActivePathTotalLen = Acc;
+    CachedClosestSeg = 0;
+}
+
+bool ASimulationRobotPawn::FindClosestOnPath2D(const FVector& Pos, int32& OutSeg, float& OutT, FVector& OutPoint) const
+{
+    if (ActivePathPoints.Num() < 2) return false;
+
+    const int32 MaxSearchAhead = 32;
+    const int32 StartSeg = FMath::Clamp(CachedClosestSeg - 1, 0, ActivePathPoints.Num() - 2);
+    const int32 EndSeg = FMath::Min(StartSeg + MaxSearchAhead, ActivePathPoints.Num() - 2);
+
+    float BestDist2 = TNumericLimits<float>::Max();
+    int32 BestSeg = StartSeg; float BestT = 0.f; FVector BestP = ActivePathPoints[StartSeg];
+
+    for (int32 i = StartSeg; i <= EndSeg; ++i)
+    {
+        const FVector A = ActivePathPoints[i];
+        const FVector B = ActivePathPoints[i + 1];
+        const FVector AB = B - A;
+        const float AB2 = FMath::Max(AB.SizeSquared2D(), 1.f);
+        const float T = FMath::Clamp(FVector::DotProduct((Pos - A), AB) / AB2, 0.f, 1.f);
+        const FVector P = A + AB * T;
+        const float D2 = FVector::DistSquared2D(Pos, P);
+        if (D2 < BestDist2)
+        {
+            BestDist2 = D2; BestSeg = i; BestT = T; BestP = P;
+        }
+    }
+
+    OutSeg = BestSeg; OutT = BestT; OutPoint = BestP;
+    return true;
+}
+
+FVector ASimulationRobotPawn::SamplePathAtS(float S, int32& IO_Seg) const
+{
+    S = FMath::Clamp(S, 0.f, ActivePathTotalLen);
+
+    // fast-path
+    int32 i = IO_Seg;
+    if (i < 0) i = 0;
+    if (i >= ActivePathCumLen.Num() - 1) i = ActivePathCumLen.Num() - 2;
+
+    while (i < ActivePathCumLen.Num() - 1 && ActivePathCumLen[i + 1] < S) ++i;
+    while (i > 0 && ActivePathCumLen[i] > S) --i;
+
+    IO_Seg = i;
+
+    const float S0 = ActivePathCumLen[i];
+    const float S1 = ActivePathCumLen[i + 1];
+    const float T = (S1 > S0) ? (S - S0) / (S1 - S0) : 0.f;
+
+    return FMath::Lerp(ActivePathPoints[i], ActivePathPoints[i + 1], T);
+}
+
+// ---------- Corridor helpers (stay in middle) ----------
+void ASimulationRobotPawn::MeasureCorridor(const FVector& Base, const FVector& Right2D, float MaxHalfWidth, float Step,
+    float& OutLeft, float& OutRight) const
+{
+    auto MeasureDir = [&](const FVector& Dir) -> float
+        {
+            float LastGood = 0.f;
+            for (float d = Step; d <= MaxHalfWidth; d += Step)
+            {
+                const FVector Test = Base + Dir * d;
+                FVector OnNav;
+                ProjectToNav(Test, OnNav);
+                const float Dist = FVector::Dist2D(Test, OnNav);
+                if (Dist > Step * 0.45f) break; // boundary reached
+                LastGood = d;
+            }
+            return LastGood;
+        };
+
+    OutRight = MeasureDir(Right2D);
+    OutLeft = MeasureDir(-Right2D);
+}
+
+FVector ASimulationRobotPawn::CenterPointInCorridor(const FVector& Base, const FVector& Fwd2D, float MaxHalfWidth, float Step) const
+{
+    // Build a 2D right vector (ignore Z to work on navmesh plane)
+    FVector F = Fwd2D; F.Z = 0.f;
+    if (!F.Normalize())
+    {
+        F = GetActorForwardVector(); F.Z = 0.f; F.Normalize();
+    }
+    const FVector Right2D(-F.Y, F.X, 0.f);
+
+    float WL = 0.f, WR = 0.f;
+    MeasureCorridor(Base, Right2D, MaxHalfWidth, Step, WL, WR);
+
+    const float Offset = (WR - WL) * 0.5f; // shift so distances to both sides equal
+    FVector Center = Base + Right2D * Offset;
+
+    FVector OnNav = Center;
+    ProjectToNav(Center, OnNav);
+    return OnNav;
+}
+
+// -------- Driving (AI) --------
+void ASimulationRobotPawn::DriveAlongPath(float Dt)
+{
+    if (ActivePathPoints.Num() < 2) return;
+
+    // 1) Find closest point on path and current arclength S
+    int32  ClosestSeg = CachedClosestSeg;
+    float  ClosestT = 0.f;
+    FVector ClosestP = ActivePathPoints[0];
+    FindClosestOnPath2D(GetActorLocation(), ClosestSeg, ClosestT, ClosestP);
+    CachedClosestSeg = ClosestSeg;
+
+    const float SNow = ActivePathCumLen[ClosestSeg] +
+        ClosestT * (ActivePathCumLen[ClosestSeg + 1] - ActivePathCumLen[ClosestSeg]);
+
+    // 2) Adaptive lookahead
+    float Ld = FMath::Clamp(LookaheadMinCM + LookaheadGainPerKmh * SpeedKmh, LookaheadMinCM, LookaheadMaxCM);
+
+    // Forward tangent on the path (for corridor centering)
+    int32 TmpSeg = ClosestSeg;
+    const FVector AheadA = SamplePathAtS(SNow + 80.f, TmpSeg);
+    const FVector AheadB = SamplePathAtS(SNow + 160.f, TmpSeg);
+    FVector PathTangent = (AheadB - AheadA); PathTangent.Z = 0.f; PathTangent.Normalize();
+
+    // 3) Target ahead, pulled to corridor center
+    auto MakeTarget = [&](float LdLocal) -> FVector
+        {
+            int32 SegForSample = ClosestSeg;
+            const FVector Raw = SamplePathAtS(SNow + LdLocal, SegForSample);
+            const FVector Mid = CenterPointInCorridor(
+                Raw,
+                PathTangent.IsNearlyZero() ? GetActorForwardVector() : PathTangent,
+                CorridorProbeHalfWidth, CorridorProbeStep);
+            FVector Blended = FMath::Lerp(Raw, Mid, FMath::Clamp(CenteringAlpha, 0.f, 1.f));
+            FVector OnNav = Blended; ProjectToNav(Blended, OnNav);
+            return OnNav;
+        };
+
+    FVector TargetOnNav = MakeTarget(Ld);
+
+    // 4) Pure Pursuit steering
+    const FVector Loc = GetActorLocation();
+    const FVector Fwd = GetActorForwardVector();
+    const FVector Rt = GetActorRightVector();
+
+    auto ComputeSteer = [&](const FVector& Tgt) -> float
+        {
+            const FVector ToT = Tgt - Loc;
+            const float x = FVector::DotProduct(Fwd, ToT);
+            const float y = FVector::DotProduct(Rt, ToT);
+            const float L = FMath::Max(1.f, WheelbaseCM);
+            const float Ld2 = FMath::Max(1.f, x * x + y * y);
+            const float SteerRad = FMath::Atan2(2.f * L * y, Ld2); // bicycle model
+            const float MaxSteerRad = FMath::DegreesToRadians(MaxSteerAngleDeg);
+            return FMath::Clamp(SteerRad / MaxSteerRad, -1.f, 1.f);
+        };
+
+    float SteerInput = ComputeSteer(TargetOnNav);
+
+    // Tight turns: shrink lookahead to stay inside mesh
+    if (FMath::Abs(SteerInput) > SteerTightThreshold)
+    {
+        Ld = FMath::Max(LookaheadMinCM, Ld * FMath::Clamp(LookaheadTightScale, 0.2f, 1.f));
+        TargetOnNav = MakeTarget(Ld);
+        SteerInput = ComputeSteer(TargetOnNav);
+    }
+
+    // 5) Speed from curvature (lateral accel + steering geometry)
+    const FVector ToT = TargetOnNav - Loc;
+    const float x = FVector::DotProduct(Fwd, ToT);
+    const float y = FVector::DotProduct(Rt, ToT);
+    const float L = FMath::Max(1.f, WheelbaseCM);
+    const float Ld2 = FMath::Max(1.f, x * x + y * y);
+    const float SteerRad = FMath::Atan2(2.f * L * y, Ld2);
+
+    const float MaxSteerRad = FMath::DegreesToRadians(MaxSteerAngleDeg);
+    const float kappa_pp_cm = (2.f * y) / FMath::Max(1.f, Ld2); // 1/cm
+    const float kappa_pp_m = kappa_pp_cm * 100.f;              // 1/m
+    float Vmax_mps = (FMath::Abs(kappa_pp_m) > 1e-5f)
+        ? FMath::Sqrt(FMath::Max(0.0f, LateralAccelMax / FMath::Abs(kappa_pp_m)))
+        : CmpsFromKmh(MaxSpeedKmh) / 100.f;
+
+    // Steering-limited radius as an extra cap
+    const float L_m = WheelbaseCM * 0.01f;
+    const float Rmin = FMath::Max(0.1f, L_m / FMath::Max(1e-3f, FMath::Tan(MaxSteerRad)));
+    const float VcapSteer_mps = FMath::Sqrt(FMath::Max(0.0f, LateralAccelMax * Rmin));
+
+    float DesiredKmh = FMath::Min(MaxSpeedKmh, FMath::Min(Vmax_mps, VcapSteer_mps) * 3.6f);
+    DesiredKmh = FMath::Max(DesiredKmh, MinCurveSpeedKmh);
+
+    // Ease near the end of the path
+    const float Remaining = ActivePathTotalLen - SNow;
+    if (Remaining < 800.f)
+    {
+        const float t = FMath::Clamp(Remaining / 800.f, 0.f, 1.f);
+        DesiredKmh = FMath::Lerp(6.f, DesiredKmh, t);
+    }
+
+    // low-pass desired speed to prevent chatter
+    if (FilteredDesiredSpeedKmh <= KINDA_SMALL_NUMBER)
+        FilteredDesiredSpeedKmh = DesiredKmh;
+    else
+        FilteredDesiredSpeedKmh = FMath::FInterpTo(FilteredDesiredSpeedKmh, DesiredKmh, Dt, 2.0f);
+
+    const float CurrSpeedKmh = SpeedKmh;
+    const float Err = FilteredDesiredSpeedKmh - CurrSpeedKmh;
+
+    float RawThrottle = 0.f;
+    float RawBrake = 0.f;
+
+    if (Err > CoastBandKmh)
+    {
+        RawThrottle = FMath::GetMappedRangeValueClamped(FVector2D(0.f, 12.f), FVector2D(0.10f, 1.f), Err);
+        RawBrake = 0.f;
+    }
+    else if (Err < -BrakeBandKmh)
+    {
+        RawThrottle = 0.f;
+        RawBrake = FMath::GetMappedRangeValueClamped(FVector2D(-30.f, 0.f), FVector2D(1.f, 0.f), Err);
+    }
+    else
+    {
+        RawThrottle = 0.f; RawBrake = 0.f; // coast band
+    }
+
+    // Smooth & apply
+    SmoothedSteer = FMath::FInterpTo(SmoothedSteer, SteerInput, Dt, SteeringSmoothing);
+    SmoothedThrottle = FMath::FInterpTo(SmoothedThrottle, RawThrottle, Dt, ThrottleSmoothing);
+    SmoothedBrake = FMath::FInterpTo(SmoothedBrake, RawBrake, Dt, BrakeSmoothing);
+
+    // Update brake lights from AI braking + manual handbrake
+    const bool bAI_Braking = (SmoothedBrake > 0.05f);
+    UpdateBrakeLightState(bAI_Braking || bHandbrakeActiveManual);
+
+    if (auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+    {
+        M->SetSteeringInput(SmoothedSteer);
+        M->SetBrakeInput(SmoothedBrake);
+        M->SetThrottleInput(SmoothedThrottle);
+
+        // light handbrake only if extremely sharp and we're too fast
+        const float AngleDeg = FMath::RadiansToDegrees(FMath::Abs(SteerRad));
+        const bool bVerySharp = AngleDeg > 0.9f * MaxSteerAngleDeg && CurrSpeedKmh > 8.f;
+        M->SetHandbrakeInput(bVerySharp && Err < -BrakeBandKmh);
+    }
+
+    // Goal handling
+    if (Remaining <= GoalAcceptanceRadius)
+    {
+        if (!PatrolCheckpoints.IsEmpty())
+        {
+            CurrentWPIndex = (CurrentWPIndex + 1) % PatrolCheckpoints.Num();
+            BuildPathTo(PatrolCheckpoints[CurrentWPIndex]);
+        }
+        else if (Waypoints.Num() > 0)
+        {
+            CurrentWPIndex = (CurrentWPIndex + 1) % Waypoints.Num();
+            if (Waypoints[CurrentWPIndex])
+                BuildPathTo(Waypoints[CurrentWPIndex]->GetActorLocation());
+        }
+    }
+}
+
+// Screen → world
 bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& WorldLocation)
 {
     if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
@@ -711,16 +933,12 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& W
             FHitResult Hit;
             const FVector Start = WorldLocation;
             const FVector End = Start + (WorldDir * 100000.0f);
-
             FCollisionQueryParams Params(SCENE_QUERY_STAT(ScreenToWorld), false);
             Params.AddIgnoredActor(this);
-
             if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
             {
-                WorldLocation = Hit.Location;
-                return true;
+                WorldLocation = Hit.Location; return true;
             }
-
             if (!FMath::IsNearlyZero(WorldDir.Z))
             {
                 const float T = -Start.Z / WorldDir.Z;
@@ -731,79 +949,135 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& W
     return false;
 }
 
-// ----------------- threats -----------------
-void ASimulationRobotPawn::OnThreatBegin(UPrimitiveComponent*, AActor* OtherActor,
-    UPrimitiveComponent*, int32, bool, const FHitResult&)
+// Threats
+void ASimulationRobotPawn::OnThreatBegin(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
+    UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/, bool /*bFromSweep*/, const FHitResult& /*SweepResult*/)
 {
     if (OtherActor && OtherActor != this) NearbyThreats.Add(OtherActor);
 }
-void ASimulationRobotPawn::OnThreatEnd(UPrimitiveComponent*, AActor* OtherActor,
-    UPrimitiveComponent*, int32)
+void ASimulationRobotPawn::OnThreatEnd(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
+    UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/)
 {
     if (OtherActor) NearbyThreats.Remove(OtherActor);
 }
+
 void ASimulationRobotPawn::DrawThreatDebug()
 {
     for (TWeakObjectPtr<AActor> T : NearbyThreats)
     {
         if (!T.IsValid()) continue;
+
         const FBox B = T->GetComponentsBoundingBox(true);
         DrawDebugBox(GetWorld(), B.GetCenter(), B.GetExtent(), FQuat::Identity, FColor::Red, false, 0.f, 0, 2.f);
 
         FString Label = TEXT("Threat");
         if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>())
+        {
             Label = TC->ThreatLabel.ToString();
+        }
 
-        DrawDebugString(GetWorld(), B.GetCenter() + FVector(0, 0, B.GetExtent().Z + 50.f), Label, nullptr, FColor::Red, 0.f, true);
+        DrawDebugString(
+            GetWorld(),
+            B.GetCenter() + FVector(0, 0, B.GetExtent().Z + 50.f),
+            Label,
+            nullptr,
+            FColor::Red,
+            0.f,
+            true);
     }
 }
+
 void ASimulationRobotPawn::UpdateThreatOverlay()
 {
     if (!ThreatOverlayWidget) return;
-
     APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
     if (!PC) return;
 
     TArray<FThreatScreenBox> Boxes;
-
     for (TWeakObjectPtr<AActor> T : NearbyThreats)
     {
         if (!T.IsValid()) continue;
-
         const FBox Bounds = T->GetComponentsBoundingBox(true);
-        const FVector Min = Bounds.Min;
-        const FVector Max = Bounds.Max;
-
+        const FVector Min = Bounds.Min, Max = Bounds.Max;
         const FVector C[8] = {
             {Min.X,Min.Y,Min.Z},{Max.X,Min.Y,Min.Z},{Max.X,Max.Y,Min.Z},{Min.X,Max.Y,Min.Z},
             {Min.X,Min.Y,Max.Z},{Max.X,Min.Y,Max.Z},{Max.X,Max.Y,Max.Z},{Min.X,Max.Y,Max.Z}
         };
-
         FVector2D MinS(FLT_MAX, FLT_MAX), MaxS(-FLT_MAX, -FLT_MAX);
         bool bAny = false;
-
         for (int i = 0; i < 8; ++i)
         {
             FVector2D S;
             if (PC->ProjectWorldLocationToScreen(C[i], S, true))
             {
                 bAny = true;
-                MinS.X = FMath::Min(MinS.X, S.X);
-                MinS.Y = FMath::Min(MinS.Y, S.Y);
-                MaxS.X = FMath::Max(MaxS.X, S.X);
-                MaxS.Y = FMath::Max(MaxS.Y, S.Y);
+                MinS.X = FMath::Min(MinS.X, S.X); MinS.Y = FMath::Min(MinS.Y, S.Y);
+                MaxS.X = FMath::Max(MaxS.X, S.X); MaxS.Y = FMath::Max(MaxS.Y, S.Y);
             }
         }
         if (!bAny) continue;
+        FThreatScreenBox Bx; Bx.Min = MinS; Bx.Max = MaxS;
+        Boxes.Add(Bx);
+    }
+    ThreatOverlayWidget->SetBoxes(Boxes);
+}
 
-        FThreatScreenBox B; B.Min = MinS; B.Max = MaxS;
-        if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>())
-            B.Label = FText::FromName(TC->ThreatLabel);
-        else
-            B.Label = FText::FromString(TEXT("Threat"));
+// -------- Blueprint helpers / API --------
+int32 ASimulationRobotPawn::GetThreatCount() const
+{
+    return NearbyThreats.Num();
+}
 
-        Boxes.Add(B);
+void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations)
+{
+    PatrolCheckpoints = CheckpointLocations;
+    CurrentWPIndex = 0;
+
+    if (bIsPatrolMode)
+    {
+        if (!PatrolCheckpoints.IsEmpty())
+            BuildPathTo(PatrolCheckpoints[0]);
+        else if (Waypoints.Num() > 0 && Waypoints[0])
+            BuildPathTo(Waypoints[0]->GetActorLocation());
+    }
+}
+
+// Hide/Show all checkpoint visuals (Blueprint class or Tag)
+void ASimulationRobotPawn::SetCheckpointMeshesHidden(bool bHide)
+{
+    UWorld* World = GetWorld();
+    if (!World) return;
+
+    TArray<AActor*> Targets;
+
+    if (CheckpointMarkerClass)
+    {
+        UGameplayStatics::GetAllActorsOfClass(World, CheckpointMarkerClass, Targets);
+    }
+    else if (!CheckpointMarkerTag.IsNone())
+    {
+        TArray<AActor*> All;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), All);
+        for (AActor* A : All)
+        {
+            if (A && A->Tags.Contains(CheckpointMarkerTag))
+            {
+                Targets.Add(A);
+            }
+        }
     }
 
-    ThreatOverlayWidget->SetBoxes(Boxes);
+    for (AActor* A : Targets)
+    {
+        if (!A) continue;
+
+        TArray<UPrimitiveComponent*> PrimComps;
+        A->GetComponents<UPrimitiveComponent>(PrimComps);
+        for (UPrimitiveComponent* C : PrimComps)
+        {
+            if (!C) continue;
+            C->SetVisibility(!bHide, true);
+            C->SetHiddenInGame(bHide, true);
+        }
+    }
 }
