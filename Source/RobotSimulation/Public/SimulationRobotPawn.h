@@ -81,16 +81,13 @@ private:
     UCameraComponent* AerialCamera = nullptr;
 
     // Feeds for UI
-    // 360 feed (keeps the auto-pan you already had)
     UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneComponent* InteriorPivot = nullptr;
     UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* Cam360Capture = nullptr;
     UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* Cam360RT = nullptr;
 
-    // Rear (points backward)
     UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* RearCapture = nullptr;
     UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* RearRT = nullptr;
 
-    // Side (points left by default; feel free to rotate in details panel)
     UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* SideCapture = nullptr;
     UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* SideRT = nullptr;
 
@@ -160,27 +157,20 @@ private:
     void SetCheckpointMeshesHidden(bool bHide);
 
     // ---------- Lights ----------
-    // Front white LEDs – manual only, via ToggleLights()
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* HeadlightLeft = nullptr;
-
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* HeadlightRight = nullptr;
 
-    // Rear red brake lights – automatic (brake/handbrake only)
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* TailLightLeft = nullptr;
-
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true"))
     USpotLightComponent* TailLightRight = nullptr;
 
     UPROPERTY(BlueprintReadOnly, Category = "Lights", meta = (AllowPrivateAccess = "true")) bool bHeadlightsOn = false;
 
-    // Apply white-headlight visibility
     void SetHeadlightsOn(bool bOn);
     void ApplyHeadlightVisibility();
-
-    // Update ONLY brake lights + record braking state
     void UpdateBrakeLightState(bool bBraking);
     bool bBrakingNow = false;
     bool bHandbrakeActiveManual = false;

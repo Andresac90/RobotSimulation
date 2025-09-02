@@ -38,7 +38,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     ThirdPersonCamera->bUsePawnControlRotation = false;
 
     // ---------- Camera Feeds for UI ----------
-    // 360 feed (interior pivot with auto-pan)
     InteriorPivot = CreateDefaultSubobject<USceneComponent>(TEXT("InteriorPivot"));
     InteriorPivot->SetupAttachment(RootComponent);
     InteriorPivot->SetRelativeLocation(FVector(0, 0, 120.f));
@@ -49,7 +48,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     Cam360Capture->bCaptureEveryFrame = true;
     Cam360Capture->ProjectionType = ECameraProjectionMode::Perspective;
 
-    // Rear camera (looks backward)
     RearCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("RearCapture"));
     RearCapture->SetupAttachment(RootComponent);
     RearCapture->SetRelativeLocation(FVector(-180.f, 0.f, 120.f));
@@ -57,7 +55,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     RearCapture->FOVAngle = 90.f;
     RearCapture->bCaptureEveryFrame = true;
 
-    // Side camera (looks left by default)
     SideCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("SideCapture"));
     SideCapture->SetupAttachment(RootComponent);
     SideCapture->SetRelativeLocation(FVector(0.f, -140.f, 120.f));
@@ -73,7 +70,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     AerialCamera->SetAutoActivate(false);
 
     // ---------- Lights ----------
-    // Front white LEDs (manual only via ToggleLights)
     HeadlightLeft = CreateDefaultSubobject<USpotLightComponent>(TEXT("HeadlightLeft"));
     HeadlightRight = CreateDefaultSubobject<USpotLightComponent>(TEXT("HeadlightRight"));
     HeadlightLeft->SetupAttachment(RootComponent);
@@ -85,7 +81,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     HeadlightLeft->SetVisibility(false);
     HeadlightRight->SetVisibility(false);
 
-    // Rear red brake lights (automatic only)
     TailLightLeft = CreateDefaultSubobject<USpotLightComponent>(TEXT("TailLightLeft"));
     TailLightRight = CreateDefaultSubobject<USpotLightComponent>(TEXT("TailLightRight"));
     TailLightLeft->SetupAttachment(RootComponent);
@@ -180,16 +175,26 @@ void ASimulationRobotPawn::BeginPlay()
     {
         ApplyAlwaysInteractiveInput(PC);
 
+        // HUD (non-interactive overlay) — must NOT block clicks
         if (HUDWidgetClass)
         {
             HUDWidget = CreateWidget<UUserWidget>(PC, HUDWidgetClass);
-            if (HUDWidget) HUDWidget->AddToViewport(100);
+            if (HUDWidget)
+            {
+                HUDWidget->AddToViewport(/*Z*/ 1);
+                HUDWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+            }
         }
 
+        // Threat boxes overlay — also must NOT block
         if (ThreatOverlayWidgetClass)
         {
             ThreatOverlayWidget = CreateWidget<UThreatBoxesWidget>(PC, ThreatOverlayWidgetClass);
-            if (ThreatOverlayWidget) ThreatOverlayWidget->AddToViewport(50);
+            if (ThreatOverlayWidget)
+            {
+                ThreatOverlayWidget->AddToViewport(/*Z*/ 10);
+                ThreatOverlayWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+            }
         }
     }
 
@@ -311,6 +316,7 @@ void ASimulationRobotPawn::UpdateBrakeLightState(bool bBraking)
         TailLightRight->SetVisibility(bBraking);
     }
 }
+
 // --------------------------------------------------
 
 void ASimulationRobotPawn::SetupPlayerInputComponent(UInputComponent* P)
@@ -621,7 +627,7 @@ bool ASimulationRobotPawn::BuildPathTo(const FVector& Goal)
 
     // Densify + project each lerped point to navmesh (centerline-ish)
     TArray<FVector> Dense;
-    AppendIfFar(Dense, Path->PathPoints[0], MinPointSpacing); // UE 5.3+ PathPoints are FVector
+    AppendIfFar(Dense, Path->PathPoints[0], MinPointSpacing);
 
     for (int32 i = 0; i < Path->PathPoints.Num() - 1; ++i)
     {
@@ -641,9 +647,7 @@ bool ASimulationRobotPawn::BuildPathTo(const FVector& Goal)
         }
     }
 
-    // light smoothing to keep it centered/stable
     SmoothPathInPlace(Dense, SmoothKernel);
-
     ActivePathPoints = MoveTemp(Dense);
     RecomputeCumulativeLength();
 
@@ -715,7 +719,7 @@ FVector ASimulationRobotPawn::SamplePathAtS(float S, int32& IO_Seg) const
     return FMath::Lerp(ActivePathPoints[i], ActivePathPoints[i + 1], T);
 }
 
-// ---------- Corridor helpers (stay in middle) ----------
+// ---------- Corridor helpers ----------
 void ASimulationRobotPawn::MeasureCorridor(const FVector& Base, const FVector& Right2D, float MaxHalfWidth, float Step,
     float& OutLeft, float& OutRight) const
 {
@@ -740,7 +744,6 @@ void ASimulationRobotPawn::MeasureCorridor(const FVector& Base, const FVector& R
 
 FVector ASimulationRobotPawn::CenterPointInCorridor(const FVector& Base, const FVector& Fwd2D, float MaxHalfWidth, float Step) const
 {
-    // Build a 2D right vector (ignore Z to work on navmesh plane)
     FVector F = Fwd2D; F.Z = 0.f;
     if (!F.Normalize())
     {
@@ -751,7 +754,7 @@ FVector ASimulationRobotPawn::CenterPointInCorridor(const FVector& Base, const F
     float WL = 0.f, WR = 0.f;
     MeasureCorridor(Base, Right2D, MaxHalfWidth, Step, WL, WR);
 
-    const float Offset = (WR - WL) * 0.5f; // shift so distances to both sides equal
+    const float Offset = (WR - WL) * 0.5f;
     FVector Center = Base + Right2D * Offset;
 
     FVector OnNav = Center;
@@ -764,7 +767,6 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
 {
     if (ActivePathPoints.Num() < 2) return;
 
-    // 1) Find closest point on path and current arclength S
     int32  ClosestSeg = CachedClosestSeg;
     float  ClosestT = 0.f;
     FVector ClosestP = ActivePathPoints[0];
@@ -774,16 +776,13 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     const float SNow = ActivePathCumLen[ClosestSeg] +
         ClosestT * (ActivePathCumLen[ClosestSeg + 1] - ActivePathCumLen[ClosestSeg]);
 
-    // 2) Adaptive lookahead
     float Ld = FMath::Clamp(LookaheadMinCM + LookaheadGainPerKmh * SpeedKmh, LookaheadMinCM, LookaheadMaxCM);
 
-    // Forward tangent on the path (for corridor centering)
     int32 TmpSeg = ClosestSeg;
     const FVector AheadA = SamplePathAtS(SNow + 80.f, TmpSeg);
     const FVector AheadB = SamplePathAtS(SNow + 160.f, TmpSeg);
     FVector PathTangent = (AheadB - AheadA); PathTangent.Z = 0.f; PathTangent.Normalize();
 
-    // 3) Target ahead, pulled to corridor center
     auto MakeTarget = [&](float LdLocal) -> FVector
         {
             int32 SegForSample = ClosestSeg;
@@ -799,7 +798,6 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
 
     FVector TargetOnNav = MakeTarget(Ld);
 
-    // 4) Pure Pursuit steering
     const FVector Loc = GetActorLocation();
     const FVector Fwd = GetActorForwardVector();
     const FVector Rt = GetActorRightVector();
@@ -811,14 +809,13 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
             const float y = FVector::DotProduct(Rt, ToT);
             const float L = FMath::Max(1.f, WheelbaseCM);
             const float Ld2 = FMath::Max(1.f, x * x + y * y);
-            const float SteerRad = FMath::Atan2(2.f * L * y, Ld2); // bicycle model
+            const float SteerRad = FMath::Atan2(2.f * L * y, Ld2);
             const float MaxSteerRad = FMath::DegreesToRadians(MaxSteerAngleDeg);
             return FMath::Clamp(SteerRad / MaxSteerRad, -1.f, 1.f);
         };
 
     float SteerInput = ComputeSteer(TargetOnNav);
 
-    // Tight turns: shrink lookahead to stay inside mesh
     if (FMath::Abs(SteerInput) > SteerTightThreshold)
     {
         Ld = FMath::Max(LookaheadMinCM, Ld * FMath::Clamp(LookaheadTightScale, 0.2f, 1.f));
@@ -826,7 +823,6 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
         SteerInput = ComputeSteer(TargetOnNav);
     }
 
-    // 5) Speed from curvature (lateral accel + steering geometry)
     const FVector ToT = TargetOnNav - Loc;
     const float x = FVector::DotProduct(Fwd, ToT);
     const float y = FVector::DotProduct(Rt, ToT);
@@ -835,13 +831,12 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     const float SteerRad = FMath::Atan2(2.f * L * y, Ld2);
 
     const float MaxSteerRad = FMath::DegreesToRadians(MaxSteerAngleDeg);
-    const float kappa_pp_cm = (2.f * y) / FMath::Max(1.f, Ld2); // 1/cm
-    const float kappa_pp_m = kappa_pp_cm * 100.f;              // 1/m
+    const float kappa_pp_cm = (2.f * y) / FMath::Max(1.f, Ld2);
+    const float kappa_pp_m = kappa_pp_cm * 100.f;
     float Vmax_mps = (FMath::Abs(kappa_pp_m) > 1e-5f)
         ? FMath::Sqrt(FMath::Max(0.0f, LateralAccelMax / FMath::Abs(kappa_pp_m)))
         : CmpsFromKmh(MaxSpeedKmh) / 100.f;
 
-    // Steering-limited radius as an extra cap
     const float L_m = WheelbaseCM * 0.01f;
     const float Rmin = FMath::Max(0.1f, L_m / FMath::Max(1e-3f, FMath::Tan(MaxSteerRad)));
     const float VcapSteer_mps = FMath::Sqrt(FMath::Max(0.0f, LateralAccelMax * Rmin));
@@ -849,7 +844,6 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     float DesiredKmh = FMath::Min(MaxSpeedKmh, FMath::Min(Vmax_mps, VcapSteer_mps) * 3.6f);
     DesiredKmh = FMath::Max(DesiredKmh, MinCurveSpeedKmh);
 
-    // Ease near the end of the path
     const float Remaining = ActivePathTotalLen - SNow;
     if (Remaining < 800.f)
     {
@@ -857,7 +851,6 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
         DesiredKmh = FMath::Lerp(6.f, DesiredKmh, t);
     }
 
-    // low-pass desired speed to prevent chatter
     if (FilteredDesiredSpeedKmh <= KINDA_SMALL_NUMBER)
         FilteredDesiredSpeedKmh = DesiredKmh;
     else
@@ -884,12 +877,10 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
         RawThrottle = 0.f; RawBrake = 0.f; // coast band
     }
 
-    // Smooth & apply
     SmoothedSteer = FMath::FInterpTo(SmoothedSteer, SteerInput, Dt, SteeringSmoothing);
     SmoothedThrottle = FMath::FInterpTo(SmoothedThrottle, RawThrottle, Dt, ThrottleSmoothing);
     SmoothedBrake = FMath::FInterpTo(SmoothedBrake, RawBrake, Dt, BrakeSmoothing);
 
-    // Update brake lights from AI braking + manual handbrake
     const bool bAI_Braking = (SmoothedBrake > 0.05f);
     UpdateBrakeLightState(bAI_Braking || bHandbrakeActiveManual);
 
@@ -899,13 +890,11 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
         M->SetBrakeInput(SmoothedBrake);
         M->SetThrottleInput(SmoothedThrottle);
 
-        // light handbrake only if extremely sharp and we're too fast
         const float AngleDeg = FMath::RadiansToDegrees(FMath::Abs(SteerRad));
         const bool bVerySharp = AngleDeg > 0.9f * MaxSteerAngleDeg && CurrSpeedKmh > 8.f;
         M->SetHandbrakeInput(bVerySharp && Err < -BrakeBandKmh);
     }
 
-    // Goal handling
     if (Remaining <= GoalAcceptanceRadius)
     {
         if (!PatrolCheckpoints.IsEmpty())

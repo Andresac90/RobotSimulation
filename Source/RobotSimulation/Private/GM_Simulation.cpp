@@ -275,24 +275,42 @@ void AGM_Simulation::SetupSimulationMode()
 
     if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Hidden);
 
+    // --- Ensure widgets exist ---
     if (!RobotStatsWidget && RobotStatsWidgetClass && PC)
     {
         RobotStatsWidget = CreateWidget<UUserWidget>(PC, RobotStatsWidgetClass);
-        if (RobotStatsWidget) RobotStatsWidget->AddToViewport(5);
     }
     if (!PatrolInfoWidget && PatrolInfoWidgetClass && PC)
     {
         PatrolInfoWidget = CreateWidget<UUserWidget>(PC, PatrolInfoWidgetClass);
-        if (PatrolInfoWidget) PatrolInfoWidget->AddToViewport(5);
     }
-    if (RobotStatsWidget) RobotStatsWidget->SetVisibility(ESlateVisibility::Visible);
-    if (PatrolInfoWidget) PatrolInfoWidget->SetVisibility(ESlateVisibility::Visible);
 
-    // Feed checkpoints and ensure 3P camera is active
+    // --- Add to viewport with stable Z (order no longer matters because we'll make them SelfHitTestInvisible) ---
+    const int32 Z_PatrolInfo = 5;
+    const int32 Z_RobotStats = 6;
+
+    if (PatrolInfoWidget)
+    {
+        if (PatrolInfoWidget->IsInViewport()) PatrolInfoWidget->RemoveFromParent();
+        PatrolInfoWidget->AddToViewport(Z_PatrolInfo);
+        // Root won't block, but its child buttons will still be clickable.
+        PatrolInfoWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+        PatrolInfoWidget->SetIsEnabled(true);
+    }
+
+    if (RobotStatsWidget)
+    {
+        if (RobotStatsWidget->IsInViewport()) RobotStatsWidget->RemoveFromParent();
+        RobotStatsWidget->AddToViewport(Z_RobotStats);
+        RobotStatsWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+        RobotStatsWidget->SetIsEnabled(true);
+    }
+
+    // Feed checkpoints + ensure 3P camera is active
     RobotPawn->SetPatrolCheckpoints(CheckpointLocations);
     RobotPawn->ForceThirdPersonCamera();
 
-    // Keep UI interactive while sim runs
+    // Keep UI interactive
     PC->bAutoManageActiveCameraTarget = false;
     PC->bShowMouseCursor = true;
     PC->bEnableClickEvents = true;
@@ -301,6 +319,7 @@ void AGM_Simulation::SetupSimulationMode()
     FInputModeGameAndUI Mode;
     Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
     Mode.SetHideCursorDuringCapture(false);
+    Mode.SetWidgetToFocus(nullptr);
     PC->SetInputMode(Mode);
 
     // Blend to the pawn’s stable view-target
@@ -310,15 +329,17 @@ void AGM_Simulation::SetupSimulationMode()
         PC->SetViewTargetWithBlend(VT, P.BlendTime, P.BlendFunction);
     }
 
-    // Make sure your keyboard binds still reach the pawn while AI owns it
+    // Make sure keyboard binds reach the pawn while AI owns it
     RobotPawn->EnableInput(PC);
 
     // Start in patrol mode immediately
     RobotPawn->BeginMission();
 
-    // Re-assert view next tick just in case
+    // Safety: re-assert camera next tick
     ReassertRobotView();
 }
+
+
 
 void AGM_Simulation::ReassertRobotView()
 {
