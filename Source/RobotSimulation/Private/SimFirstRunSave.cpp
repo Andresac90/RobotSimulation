@@ -2,7 +2,5 @@
 
 USimFirstRunSave::USimFirstRunSave()
     : bGraphicsBenchmarked(false)
-    , bResolutionConfigured(false)
-    , bTSRConfigured(false)
 {
 }
