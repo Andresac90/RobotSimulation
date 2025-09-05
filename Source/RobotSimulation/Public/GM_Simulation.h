@@ -45,6 +45,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
     TSubclassOf<UUserWidget> PatrolInfoWidgetClass;
 
+    // NEW: Camera dock (WBP_CameraDock)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+    TSubclassOf<UUserWidget> CameraDockClass;
+
     // Planning camera (optional)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
     FName PlanningViewTag = TEXT("PlanningView");
@@ -88,6 +92,9 @@ private:
     UPROPERTY() UUserWidget* MapOverviewWidget = nullptr;
     UPROPERTY() UUserWidget* RobotStatsWidget = nullptr;
     UPROPERTY() UUserWidget* PatrolInfoWidget = nullptr;
+
+    // NEW: camera dock instance
+    UPROPERTY() UUserWidget* CameraDock = nullptr;
 
     // planning cam
     UPROPERTY() AActor* PlanningViewActor = nullptr;

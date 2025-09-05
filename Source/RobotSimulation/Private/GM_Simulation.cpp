@@ -254,6 +254,9 @@ void AGM_Simulation::SetupPlanningMode()
     if (MapOverviewWidget) MapOverviewWidget->SetVisibility(ESlateVisibility::Visible);
     if (RobotStatsWidget)  RobotStatsWidget->SetVisibility(ESlateVisibility::Hidden);
     if (PatrolInfoWidget)  PatrolInfoWidget->SetVisibility(ESlateVisibility::Hidden);
+
+    // NEW: hide camera dock in planning mode (keep instance if already created)
+    if (CameraDock) CameraDock->SetVisibility(ESlateVisibility::Hidden);
 }
 
 void AGM_Simulation::SetupSimulationMode()
@@ -284,8 +287,26 @@ void AGM_Simulation::SetupSimulationMode()
     {
         PatrolInfoWidget = CreateWidget<UUserWidget>(PC, PatrolInfoWidgetClass);
     }
+    // NEW: create camera dock if needed
+    if (!CameraDock && CameraDockClass && PC)
+    {
+        CameraDock = CreateWidget<UUserWidget>(PC, CameraDockClass);
+        if (CameraDock)
+        {
+            CameraDock->AddToViewport(/*Z*/ 8);
+            CameraDock->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+            CameraDock->SetIsEnabled(true);
+        }
+    }
+    else if (CameraDock)
+    {
+        if (!CameraDock->IsInViewport())
+            CameraDock->AddToViewport(8);
+        CameraDock->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+        CameraDock->SetIsEnabled(true);
+    }
 
-    // --- Add to viewport with stable Z (order no longer matters because we'll make them SelfHitTestInvisible) ---
+    // --- Add the other widgets to viewport & make them non-blocking ---
     const int32 Z_PatrolInfo = 5;
     const int32 Z_RobotStats = 6;
 
@@ -293,7 +314,6 @@ void AGM_Simulation::SetupSimulationMode()
     {
         if (PatrolInfoWidget->IsInViewport()) PatrolInfoWidget->RemoveFromParent();
         PatrolInfoWidget->AddToViewport(Z_PatrolInfo);
-        // Root won't block, but its child buttons will still be clickable.
         PatrolInfoWidget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
         PatrolInfoWidget->SetIsEnabled(true);
     }
@@ -338,8 +358,6 @@ void AGM_Simulation::SetupSimulationMode()
     // Safety: re-assert camera next tick
     ReassertRobotView();
 }
-
-
 
 void AGM_Simulation::ReassertRobotView()
 {

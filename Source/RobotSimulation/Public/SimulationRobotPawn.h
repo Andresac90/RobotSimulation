@@ -36,14 +36,17 @@ public:
 
     // Helpers
     UFUNCTION(BlueprintCallable, Category = "Camera")  void SetAerialView(bool bUseAerial);
-    UFUNCTION(BlueprintPure, Category = "Patrol")    bool IsPatrolling() const { return bIsPatrolMode; }
+    UFUNCTION(BlueprintPure, Category = "Patrol")   bool IsPatrolling() const { return bIsPatrolMode; }
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
     UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
-    // Camera feeds for UI
+    // -------- Camera feeds for UI (EXACTLY 360 / FRONT / BACK) --------
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetCam360RT() const { return Cam360RT; }
+    UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetFrontRT() const { return FrontRT; }
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetRearRT()  const { return RearRT; }
-    UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetSideRT()  const { return SideRT; }
+
+    // Back-compat (if any BP/code still calls GetSideRT, return the Front feed)
+    UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetSideRT() const { return FrontRT; }
 
     // (kept for GM_Simulation compatibility)
     UFUNCTION(BlueprintPure, Category = "Camera") AActor* GetThirdPersonViewTarget() const { return (AActor*)ViewTargetProxy; }
@@ -88,8 +91,8 @@ private:
     UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* RearCapture = nullptr;
     UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* RearRT = nullptr;
 
-    UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* SideCapture = nullptr;
-    UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* SideRT = nullptr;
+    UPROPERTY(VisibleAnywhere, Category = "Camera|Feeds") USceneCaptureComponent2D* FrontCapture = nullptr;
+    UPROPERTY(BlueprintReadOnly, Category = "Camera|Feeds", meta = (AllowPrivateAccess = "true")) UTextureRenderTarget2D* FrontRT = nullptr;
 
     // 3P camera tuning
     UPROPERTY(EditAnywhere, Category = "Camera") float ThirdPersonArmLength = 1200.f;
@@ -108,7 +111,7 @@ private:
 
     // 360 auto-pan
     UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawAmplitude = 75.f; // +/- deg
-    UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawSpeed = 20.f;     // deg/sec
+    UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawSpeed = 20.f; // deg/sec
     float Cam360Time = 0.f;
 
 public:
@@ -120,7 +123,7 @@ public:
 
 private:
     // ---------- Patrol / Path ----------
-    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) bool bIsPatrolMode = false;
+    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) bool  bIsPatrolMode = false;
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) int32 CurrentWPIndex = 0;
 
     UPROPERTY() TArray<AActor*> Waypoints;
@@ -180,7 +183,7 @@ private:
     UPROPERTY(EditAnywhere, Category = "Threats")  float ThreatSenseRadius = 1200.f;
     UPROPERTY(EditAnywhere, Category = "Threats")  bool  bDrawThreatBoxes = true;
 
-    UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UUserWidget> HUDWidgetClass;
+    UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UUserWidget>        HUDWidgetClass;
     UPROPERTY() UUserWidget* HUDWidget = nullptr;
 
     UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UThreatBoxesWidget> ThreatOverlayWidgetClass;
@@ -206,7 +209,7 @@ private:
     bool  ProjectToNav(const FVector& In, FVector& Out) const;
 
     // ---------- Corridor helpers ----------
-    void MeasureCorridor(const FVector& Base, const FVector& Right2D, float MaxHalfWidth, float Step, float& OutLeft, float& OutRight) const;
+    void    MeasureCorridor(const FVector& Base, const FVector& Right2D, float MaxHalfWidth, float Step, float& OutLeft, float& OutRight) const;
     FVector CenterPointInCorridor(const FVector& Base, const FVector& Fwd2D, float MaxHalfWidth, float Step) const;
 
     // Aux input (axes while "AI" possesses)

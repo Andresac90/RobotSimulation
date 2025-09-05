@@ -13,17 +13,20 @@ public:
     virtual void Init() override;
 
 private:
-    // One-time on first launch: benchmark, lock res scale, disable dyn-res.
+    // First-run: run hardware benchmark, set desktop/native, borderless, lock primary scale, disable dynamic res.
     void RunFirstLaunchGraphicsSetupIfNeeded();
 
-    // Every startup & every map init: TSR Quality + crisp UI + dyn-res OFF.
+    // Enforce TSR Quality + crisp output + DR off each time.
     void EnforceRuntimeCvars();
 
-    // Match desktop/native res + borderless fullscreen.
-    void ApplyDesktopResolution();
-
-    // Re-assert after each world init (editor & packaged).
+    // Called when a world finishes initialization (editor & packaged).
     void OnPostWorldInit(UWorld* World, const UWorld::InitializationValues IVS);
+
+    // Verify actual backbuffer and force native output if it didn’t stick.
+    void VerifyAndForceOutputResolution();
+
+    // Also verify on the first tick after Init (extra safety).
+    bool TickerVerify(float DeltaSeconds);
 
     UPROPERTY() FString FirstRunSlot = TEXT("FirstRun");
 };

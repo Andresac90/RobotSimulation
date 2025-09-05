@@ -46,6 +46,7 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     Cam360Capture->SetupAttachment(InteriorPivot);
     Cam360Capture->FOVAngle = 90.f;
     Cam360Capture->bCaptureEveryFrame = true;
+    Cam360Capture->bCaptureOnMovement = false;
     Cam360Capture->ProjectionType = ECameraProjectionMode::Perspective;
 
     RearCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("RearCapture"));
@@ -54,13 +55,16 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     RearCapture->SetRelativeRotation(FRotator(0.f, 180.f, 0.f));
     RearCapture->FOVAngle = 90.f;
     RearCapture->bCaptureEveryFrame = true;
+    RearCapture->bCaptureOnMovement = false;
 
-    SideCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("SideCapture"));
-    SideCapture->SetupAttachment(RootComponent);
-    SideCapture->SetRelativeLocation(FVector(0.f, -140.f, 120.f));
-    SideCapture->SetRelativeRotation(FRotator(0.f, -90.f, 0.f));
-    SideCapture->FOVAngle = 90.f;
-    SideCapture->bCaptureEveryFrame = true;
+    // NEW: Front capture (forward-facing)
+    FrontCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("FrontCapture"));
+    FrontCapture->SetupAttachment(RootComponent);
+    FrontCapture->SetRelativeLocation(FVector(180.f, 0.f, 120.f));
+    FrontCapture->SetRelativeRotation(FRotator(0.f, 0.f, 0.f));
+    FrontCapture->FOVAngle = 90.f;
+    FrontCapture->bCaptureEveryFrame = true;
+    FrontCapture->bCaptureOnMovement = false;
 
     // ---------- Aerial camera ----------
     AerialCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("AerialCam"));
@@ -142,25 +146,36 @@ void ASimulationRobotPawn::BeginPlay()
 
     ResolveCriticalComponents();
 
-    // ---------- Create RTs for the three feeds ----------
-    Cam360RT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Cam360"));
-    Cam360RT->InitAutoFormat(512, 288);
-    Cam360RT->ClearColor = FLinearColor::Black;
-    Cam360RT->TargetGamma = 2.2f;
+    // ---------- Create RTs for the three feeds (LDR, opaque alpha) ----------
+    auto CreateRT_LDR = [&](const TCHAR* Name, int32 W, int32 H) -> UTextureRenderTarget2D*
+        {
+            UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(this, Name);
+            // LDR format with alpha = 1
+            RT->InitCustomFormat(W, H, PF_B8G8R8A8, /*bForceLinearGamma*/ false);
+            RT->ClearColor = FLinearColor(0.f, 0.f, 0.f, 1.f);
+            RT->TargetGamma = 2.2f;
+            RT->UpdateResourceImmediate(true);
+            return RT;
+        };
 
-    RearRT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Rear"));
-    RearRT->InitAutoFormat(512, 288);
-    RearRT->ClearColor = FLinearColor::Black;
-    RearRT->TargetGamma = 2.2f;
+    Cam360RT = CreateRT_LDR(TEXT("RT_Cam360"), 512, 288);
+    RearRT = CreateRT_LDR(TEXT("RT_Rear"), 512, 288);
+    FrontRT = CreateRT_LDR(TEXT("RT_Front"), 512, 288);
 
-    SideRT = NewObject<UTextureRenderTarget2D>(this, TEXT("RT_Side"));
-    SideRT->InitAutoFormat(512, 288);
-    SideRT->ClearColor = FLinearColor::Black;
-    SideRT->TargetGamma = 2.2f;
+    // Assign RTs and configure captures to output opaque color
+    auto PrimeCapture = [](USceneCaptureComponent2D* C, UTextureRenderTarget2D* RT)
+        {
+            if (!C || !RT) return;
+            C->TextureTarget = RT;
+            C->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR; // alpha=1 output
+            C->bCaptureEveryFrame = true;
+            C->bCaptureOnMovement = false;
+            C->CaptureScene(); // prime one frame immediately
+        };
 
-    if (Cam360Capture) Cam360Capture->TextureTarget = Cam360RT;
-    if (RearCapture)   RearCapture->TextureTarget = RearRT;
-    if (SideCapture)   SideCapture->TextureTarget = SideRT;
+    PrimeCapture(Cam360Capture, Cam360RT);
+    PrimeCapture(RearCapture, RearRT);
+    PrimeCapture(FrontCapture, FrontRT);
 
     if (AGM_Simulation* GM = GetWorld()->GetAuthGameMode<AGM_Simulation>())
         GM->NotifyRobotReady(this);
@@ -175,7 +190,7 @@ void ASimulationRobotPawn::BeginPlay()
     {
         ApplyAlwaysInteractiveInput(PC);
 
-        // HUD (non-interactive overlay) — must NOT block clicks
+        // HUD (non-interactive overlay)
         if (HUDWidgetClass)
         {
             HUDWidget = CreateWidget<UUserWidget>(PC, HUDWidgetClass);
@@ -186,7 +201,7 @@ void ASimulationRobotPawn::BeginPlay()
             }
         }
 
-        // Threat boxes overlay — also must NOT block
+        // Threat boxes overlay
         if (ThreatOverlayWidgetClass)
         {
             ThreatOverlayWidget = CreateWidget<UThreatBoxesWidget>(PC, ThreatOverlayWidgetClass);
