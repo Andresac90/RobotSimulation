@@ -57,7 +57,6 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     RearCapture->bCaptureEveryFrame = true;
     RearCapture->bCaptureOnMovement = false;
 
-    // NEW: Front capture (forward-facing)
     FrontCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("FrontCapture"));
     FrontCapture->SetupAttachment(RootComponent);
     FrontCapture->SetRelativeLocation(FVector(180.f, 0.f, 120.f));
@@ -146,11 +145,10 @@ void ASimulationRobotPawn::BeginPlay()
 
     ResolveCriticalComponents();
 
-    // ---------- Create RTs for the three feeds (LDR, opaque alpha) ----------
+    // ---------- Create RTs for the three feeds ----------
     auto CreateRT_LDR = [&](const TCHAR* Name, int32 W, int32 H) -> UTextureRenderTarget2D*
         {
             UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(this, Name);
-            // LDR format with alpha = 1
             RT->InitCustomFormat(W, H, PF_B8G8R8A8, /*bForceLinearGamma*/ false);
             RT->ClearColor = FLinearColor(0.f, 0.f, 0.f, 1.f);
             RT->TargetGamma = 2.2f;
@@ -162,17 +160,15 @@ void ASimulationRobotPawn::BeginPlay()
     RearRT = CreateRT_LDR(TEXT("RT_Rear"), 512, 288);
     FrontRT = CreateRT_LDR(TEXT("RT_Front"), 512, 288);
 
-    // Assign RTs and configure captures to output opaque color
     auto PrimeCapture = [](USceneCaptureComponent2D* C, UTextureRenderTarget2D* RT)
         {
             if (!C || !RT) return;
             C->TextureTarget = RT;
-            C->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR; // alpha=1 output
+            C->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
             C->bCaptureEveryFrame = true;
             C->bCaptureOnMovement = false;
-            C->CaptureScene(); // prime one frame immediately
+            C->CaptureScene();
         };
-
     PrimeCapture(Cam360Capture, Cam360RT);
     PrimeCapture(RearCapture, RearRT);
     PrimeCapture(FrontCapture, FrontRT);
@@ -190,7 +186,6 @@ void ASimulationRobotPawn::BeginPlay()
     {
         ApplyAlwaysInteractiveInput(PC);
 
-        // HUD (non-interactive overlay)
         if (HUDWidgetClass)
         {
             HUDWidget = CreateWidget<UUserWidget>(PC, HUDWidgetClass);
@@ -201,7 +196,6 @@ void ASimulationRobotPawn::BeginPlay()
             }
         }
 
-        // Threat boxes overlay
         if (ThreatOverlayWidgetClass)
         {
             ThreatOverlayWidget = CreateWidget<UThreatBoxesWidget>(PC, ThreatOverlayWidgetClass);
@@ -233,6 +227,14 @@ void ASimulationRobotPawn::BeginPlay()
     // Start with headlights off (manual control) and brake lights off
     SetHeadlightsOn(false);
     UpdateBrakeLightState(false);
+
+    // If at least one checkpoint present, spawn/snap to checkpoint #1 (Z = 132 to avoid falling)
+    if (PatrolCheckpoints.Num() > 0)
+    {
+        FVector P = PatrolCheckpoints[0];
+        P.Z = 132.f;
+        SetActorLocation(P, /*bSweep=*/false);
+    }
 }
 
 void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -269,7 +271,6 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
             if (NavSys->ProjectPointToNavigation(GetActorLocation(), Projected, Extent))
             {
                 const float Dist2D = FVector::Dist2D(Projected.Location, GetActorLocation());
-
                 if (Dist2D > StrictClampDistance)
                 {
                     SetActorLocation(Projected.Location, /*bSweep=*/true);
@@ -464,6 +465,23 @@ void ASimulationRobotPawn::ToggleSpeedLimit()
 }
 void ASimulationRobotPawn::TogglePatrolMode()
 {
+    // If enabling patrol, require at least 2 checkpoints
+    if (!bIsPatrolMode)
+    {
+        if (PatrolCheckpoints.Num() < 2)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 2 checkpoints to start patrol."));
+            if (GEngine)
+            {
+                GEngine->AddOnScreenDebugMessage(
+                    -1, 2.f, FColor::Red,
+                    TEXT("Place at least 2 checkpoints to start.")
+                );
+            }
+            return;
+        }
+    }
+
     bIsPatrolMode = !bIsPatrolMode;
     APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
 
@@ -472,10 +490,8 @@ void ASimulationRobotPawn::TogglePatrolMode()
         SetCheckpointMeshesHidden(true); // hide visual markers
         CurrentWPIndex = 0;
 
-        FVector Goal = GetActorLocation();
-        if (!PatrolCheckpoints.IsEmpty())             Goal = PatrolCheckpoints[0];
-        else if (Waypoints.Num() > 0 && Waypoints[0]) Goal = Waypoints[0]->GetActorLocation();
-
+        // Start from checkpoint #1
+        FVector Goal = PatrolCheckpoints[0];
         BuildPathTo(Goal);
 
         if (PC) { InstallAuxInput(PC); ApplyAlwaysInteractiveInput(PC); }
@@ -505,14 +521,19 @@ void ASimulationRobotPawn::TogglePatrolMode()
         }
     }
 }
+
 void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
 void ASimulationRobotPawn::EndMission()
 {
     if (bIsPatrolMode) TogglePatrolMode();
     SetAerialView(true);
 }
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+// The Blueprint calls this to END the simulation and RESTART the level.
 void ASimulationRobotPawn::EndSimulation()
 {
+    // Ensure we are back in manual mode and lights/brakes sane
     if (bIsPatrolMode) TogglePatrolMode();
 
     PatrolCheckpoints.Reset();
@@ -523,7 +544,15 @@ void ASimulationRobotPawn::EndSimulation()
     CurrentWPIndex = 0;
 
     SetAerialView(true);
+
+    // Restart current persistent level
+    if (UWorld* World = GetWorld())
+    {
+        const FName LevelName = FName(*UGameplayStatics::GetCurrentLevelName(World, /*bRemovePrefix*/true));
+        UGameplayStatics::OpenLevel(this, LevelName);
+    }
 }
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 void ASimulationRobotPawn::ToggleLights()
 {
@@ -914,6 +943,7 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     {
         if (!PatrolCheckpoints.IsEmpty())
         {
+            // From checkpoint #2 on, follow them as waypoints
             CurrentWPIndex = (CurrentWPIndex + 1) % PatrolCheckpoints.Num();
             BuildPathTo(PatrolCheckpoints[CurrentWPIndex]);
         }
@@ -1037,12 +1067,10 @@ void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& Checkpoin
     PatrolCheckpoints = CheckpointLocations;
     CurrentWPIndex = 0;
 
-    if (bIsPatrolMode)
+    // If already in patrol, rebuild from checkpoint #1
+    if (bIsPatrolMode && PatrolCheckpoints.Num() > 0)
     {
-        if (!PatrolCheckpoints.IsEmpty())
-            BuildPathTo(PatrolCheckpoints[0]);
-        else if (Waypoints.Num() > 0 && Waypoints[0])
-            BuildPathTo(Waypoints[0]->GetActorLocation());
+        BuildPathTo(PatrolCheckpoints[0]);
     }
 }
 

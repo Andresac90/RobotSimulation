@@ -1,5 +1,4 @@
 #include "ThreatBoxesWidget.h"
-#include "Slate/SlateBrushAsset.h"
 #include "Rendering/DrawElements.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Styling/CoreStyle.h"
@@ -14,8 +13,7 @@ int32 UThreatBoxesWidget::NativePaint(const FPaintArgs& Args, const FGeometry& A
 
     for (const FThreatScreenBox& B : Boxes)
     {
-        // Our coords are viewport pixels and this widget is unbound full-screen.
-        // Convert to local widget space (accounts for DPI scale).
+        // Convert viewport pixels to local widget space (handles DPI)
         const FVector2D TL = AllottedGeometry.AbsoluteToLocal(B.Min);
         const FVector2D BR = AllottedGeometry.AbsoluteToLocal(B.Max);
         const FVector2D TR(BR.X, TL.Y);
@@ -34,12 +32,12 @@ int32 UThreatBoxesWidget::NativePaint(const FPaintArgs& Args, const FGeometry& A
             FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), P, ESlateDrawEffect::None, C, true, W);
         }
 
-        // Label (top-left, with a small margin)
+        // Label (top-left, small margin) — uses the older overload (fine on UE 5.5)
         const FVector2D LabelPos = TL + FVector2D(4.f, -(TextSize + 4.f));
         FSlateDrawElement::MakeText(
             OutDrawElements,
             LayerId + 1,
-            AllottedGeometry.ToPaintGeometry(LabelPos, FVector2D(1, 1)),
+            AllottedGeometry.ToPaintGeometry(LabelPos, FVector2D(1.f, 1.f)), // <— old API
             B.Label.ToString(),
             Font,
             ESlateDrawEffect::None,

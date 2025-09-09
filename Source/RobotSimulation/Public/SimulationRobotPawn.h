@@ -24,17 +24,17 @@ public:
     ASimulationRobotPawn(const FObjectInitializer& ObjInit);
     virtual void Tick(float DeltaTime) override;
 
-    // UI-callable controls
+    // ---------- UI-callable controls ----------
     UFUNCTION(BlueprintCallable, Category = "Control") void ToggleSpeedLimit();
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void TogglePatrolMode();
     UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();               // HEADLIGHTS only
     UFUNCTION(BlueprintCallable, Category = "Mission") void BeginMission();
     UFUNCTION(BlueprintCallable, Category = "Mission") void EndMission();
-    UFUNCTION(BlueprintCallable, Category = "Mission") void EndSimulation();
+    UFUNCTION(BlueprintCallable, Category = "Mission") void EndSimulation();              // <— RESTARTS LEVEL
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ForceThirdPersonCamera();
 
-    // Helpers
+    // ---------- Helpers ----------
     UFUNCTION(BlueprintCallable, Category = "Camera")  void SetAerialView(bool bUseAerial);
     UFUNCTION(BlueprintPure, Category = "Patrol")   bool IsPatrolling() const { return bIsPatrolMode; }
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
@@ -44,8 +44,7 @@ public:
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetCam360RT() const { return Cam360RT; }
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetFrontRT() const { return FrontRT; }
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetRearRT()  const { return RearRT; }
-
-    // Back-compat (if any BP/code still calls GetSideRT, return the Front feed)
+    // Back-compat
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetSideRT() const { return FrontRT; }
 
     // (kept for GM_Simulation compatibility)
@@ -111,11 +110,11 @@ private:
 
     // 360 auto-pan
     UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawAmplitude = 75.f; // +/- deg
-    UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawSpeed = 20.f; // deg/sec
+    UPROPERTY(EditAnywhere, Category = "Camera|Feeds") float Cam360YawSpeed = 20.f;     // deg/sec
     float Cam360Time = 0.f;
 
 public:
-    // HUD-facing stats
+    // ---------- HUD-facing stats ----------
     UPROPERTY(BlueprintReadOnly, Category = "Stats") float SpeedKmh = 0.f;
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0")) float MaxSpeedKmh = 22.f;
 
