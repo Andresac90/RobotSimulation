@@ -1130,7 +1130,7 @@ void ASimulationRobotPawn::UpdateThreatOverlay()
     if (!PC) return;
 
     TArray<FThreatScreenBox> Boxes;
-    for (TWeakObjectPtr<AActor> T : NearbyThreats)
+    for (TWeakObjectPtr<AActor> T : NearbyThreats)   // <-- IMPORTANT: AActor here
     {
         if (!T.IsValid()) continue;
         const FBox Bounds = T->GetComponentsBoundingBox(true);
