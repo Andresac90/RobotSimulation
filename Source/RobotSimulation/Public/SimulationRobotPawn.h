@@ -204,8 +204,8 @@ private:
     void  RecomputeCumulativeLength();
     bool  FindClosestOnPath2D(const FVector& Pos, int32& OutSeg, float& OutSegT, FVector& OutPoint) const;
     FVector SamplePathAtS(float S, int32& IO_Seg) const;
-    void  DriveAlongPath(float Dt);
-    bool  ProjectToNav(const FVector& In, FVector& Out) const;
+    void   DriveAlongPath(float Dt);
+    bool   ProjectToNav(const FVector& In, FVector& Out) const;
 
     // ---------- Corridor helpers ----------
     void    MeasureCorridor(const FVector& Base, const FVector& Right2D, float MaxHalfWidth, float Step, float& OutLeft, float& OutRight) const;
@@ -235,4 +235,10 @@ private:
 
     // Speed limit
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true")) bool bSpeedLimited = false;
+
+    // ---- Private helpers (need access to PatrolCheckpoints) ----
+    bool HasMinCheckpoints() const;          // true if PatrolCheckpoints.Num() >= 2
+    void SnapToCheckpoint0();                // place on CP0 (grounded)
+    void OrientFrontToward(const FVector& Target);         // set yaw toward Target
+    void OrientFrontTowardNextCheckpoint();                // set yaw toward next checkpoint (current goal)
 };
