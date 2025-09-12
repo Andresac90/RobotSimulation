@@ -17,8 +17,71 @@
 #include "ThreatScreenBox.h"
 #include "ThreatComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Engine/Engine.h" // GEngine->AddOnScreenDebugMessage
 
 #define LOG_PTR(Name, Ptr) UE_LOG(LogTemp, Log, TEXT("[RobotPawn] %s: %s"), TEXT(Name), Ptr ? *Ptr->GetName() : TEXT("<null>"))
+
+// ======================================================================
+// Local helpers (file-private, no header changes)
+// ======================================================================
+static FVector FindSafeGroundLocation(UWorld* World, const FVector& Desired, const AActor* IgnoreActor)
+{
+    if (!World) return Desired;
+
+    // 1) Raycast straight down to find actual ground (preferred)
+    FHitResult Hit;
+    const FVector Start = Desired + FVector(0, 0, 10000.f);
+    const FVector End = Desired - FVector(0, 0, 50000.f);
+    FCollisionQueryParams Params(SCENE_QUERY_STAT(RobotSpawnSnap), false);
+    if (IgnoreActor) Params.AddIgnoredActor(IgnoreActor);
+
+    if (World->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_WorldStatic, Params))
+    {
+        return Hit.Location + FVector(0, 0, 5.f); // tiny lift to avoid initial penetration
+    }
+
+    // 2) Fallback: project to navmesh (keep XY, adopt nav Z)
+    if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+    {
+        FNavLocation NL;
+        if (NavSys->ProjectPointToNavigation(Desired, NL, FVector(500.f, 500.f, 2000.f)))
+        {
+            return FVector(Desired.X, Desired.Y, NL.Location.Z + 5.f);
+        }
+    }
+
+    // 3) Last resort
+    return Desired;
+}
+
+static bool HasMinCheckpoints(const TArray<FVector>& Pts)
+{
+    return Pts.Num() >= 2;
+}
+
+static void SnapPawnToCheckpoint0(class ASimulationRobotPawn* Self)
+{
+    if (!Self) return;
+    if (Self->GetWorld() == nullptr) return;
+    if (Self->PatrolCheckpoints.Num() <= 0) return;
+
+    const FVector Desired = Self->PatrolCheckpoints[0];
+    const FVector Safe = FindSafeGroundLocation(Self->GetWorld(), Desired, Self);
+    Self->SetActorLocation(Safe, /*bSweep=*/false);
+
+    // Face toward #1 if available
+    if (Self->PatrolCheckpoints.Num() > 1)
+    {
+        FVector Dir = Self->PatrolCheckpoints[1] - Self->PatrolCheckpoints[0];
+        Dir.Z = 0.f;
+        if (!Dir.IsNearlyZero())
+        {
+            Self->SetActorRotation(Dir.Rotation());
+        }
+    }
+}
+
+// ======================================================================
 
 ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     : Super(ObjInit)
@@ -228,13 +291,11 @@ void ASimulationRobotPawn::BeginPlay()
     SetHeadlightsOn(false);
     UpdateBrakeLightState(false);
 
-    // If at least one checkpoint present, spawn/snap to checkpoint #1 (Z = 132 to avoid falling)
-    if (PatrolCheckpoints.Num() > 0)
-    {
-        FVector P = PatrolCheckpoints[0];
-        P.Z = 132.f;
-        SetActorLocation(P, /*bSweep=*/false);
-    }
+    // Hide any checkpoint visuals at runtime
+    SetCheckpointMeshesHidden(true);
+
+    // If checkpoints were already provided before BeginPlay, snap now
+    SnapPawnToCheckpoint0(this);
 }
 
 void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -261,7 +322,7 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
     else
         SpeedKmh = 0.f;
 
-    // Strict clamp: NEVER leave navmesh
+    // STRONG clamp to navmesh
     if (bHardClampToNavmesh)
     {
         if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
@@ -271,13 +332,13 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
             if (NavSys->ProjectPointToNavigation(GetActorLocation(), Projected, Extent))
             {
                 const float Dist2D = FVector::Dist2D(Projected.Location, GetActorLocation());
-                if (Dist2D > StrictClampDistance)
+                if (Dist2D > 5.f)
                 {
-                    SetActorLocation(Projected.Location, /*bSweep=*/true);
-                }
-                else if (Dist2D > MaxOffNavDistance)
-                {
-                    const FVector NewLoc = FMath::VInterpTo(GetActorLocation(), Projected.Location, DeltaTime, 24.f);
+                    const bool bFar = Dist2D > StrictClampDistance;
+                    const FVector Target = Projected.Location;
+                    const FVector NewLoc = bFar
+                        ? Target
+                        : FMath::VInterpTo(GetActorLocation(), Target, DeltaTime, 64.f);
                     SetActorLocation(NewLoc, /*bSweep=*/true);
                 }
             }
@@ -298,8 +359,51 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
     if (bDrawThreatBoxes) DrawThreatDebug();
     UpdateThreatOverlay();
 
+    // Safety: never drive if we don’t have 2+ checkpoints
+    if (bIsPatrolMode && !HasMinCheckpoints(PatrolCheckpoints))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Patrol prevented/cancelled (need at least 2 checkpoints)."));
+        if (GEngine)
+        {
+            GEngine->AddOnScreenDebugMessage(
+                -1, 2.f, FColor::Red,
+                TEXT("Place at least 2 checkpoints to start.")
+            );
+        }
+
+        // Hard cancel patrol immediately (do not rely on UI)
+        bIsPatrolMode = false;
+
+        ActivePathPoints.Reset();
+        ActivePathCumLen.Reset();
+        ActivePathTotalLen = 0.f;
+        CachedClosestSeg = 0;
+
+        if (auto* Mv = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+        {
+            Mv->SetSteeringInput(0.f);
+            Mv->SetThrottleInput(0.f);
+            Mv->SetBrakeInput(0.f);
+            Mv->SetHandbrakeInput(true);
+        }
+
+        if (APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0))
+        {
+            RemoveAuxInput(PC);
+            PC->Possess(this);
+            ApplyAlwaysInteractiveInput(PC);
+        }
+
+        // Keep visuals hidden
+        SetCheckpointMeshesHidden(true);
+
+        return;
+    }
+
     if (bIsPatrolMode)
+    {
         DriveAlongPath(DeltaTime);
+    }
 }
 
 // ----------------- Lights helpers -----------------
@@ -353,6 +457,7 @@ void ASimulationRobotPawn::BindCommonInputs(UInputComponent* IC)
     IC->BindAction("RotateCamera", IE_Released, this, &ASimulationRobotPawn::StopCameraRotate);
 }
 
+// Aux input for manual control while "AI" logic owns the pawn
 void ASimulationRobotPawn::InstallAuxInput(APlayerController* PC)
 {
     if (!PC || AuxInput) return;
@@ -463,23 +568,21 @@ void ASimulationRobotPawn::ToggleSpeedLimit()
     if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
         C->EngineSetup.MaxRPM = 3000.f; // simple cap
 }
+
 void ASimulationRobotPawn::TogglePatrolMode()
 {
-    // If enabling patrol, require at least 2 checkpoints
-    if (!bIsPatrolMode)
+    // Enabling patrol requires 2+ checkpoints
+    if (!bIsPatrolMode && !HasMinCheckpoints(PatrolCheckpoints))
     {
-        if (PatrolCheckpoints.Num() < 2)
+        UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 2 checkpoints to start patrol."));
+        if (GEngine)
         {
-            UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 2 checkpoints to start patrol."));
-            if (GEngine)
-            {
-                GEngine->AddOnScreenDebugMessage(
-                    -1, 2.f, FColor::Red,
-                    TEXT("Place at least 2 checkpoints to start.")
-                );
-            }
-            return;
+            GEngine->AddOnScreenDebugMessage(
+                -1, 2.f, FColor::Red,
+                TEXT("Place at least 2 checkpoints to start.")
+            );
         }
+        return; // do NOT toggle
     }
 
     bIsPatrolMode = !bIsPatrolMode;
@@ -487,18 +590,24 @@ void ASimulationRobotPawn::TogglePatrolMode()
 
     if (bIsPatrolMode)
     {
-        SetCheckpointMeshesHidden(true); // hide visual markers
+        // Hide markers while patrolling
+        SetCheckpointMeshesHidden(true);
+
         CurrentWPIndex = 0;
 
-        // Start from checkpoint #1
-        FVector Goal = PatrolCheckpoints[0];
+        // Snap exactly to checkpoint #0 and orient toward #1 before building path
+        SnapPawnToCheckpoint0(this);
+
+        // Start from checkpoint #1 position as the first goal (drive forward along path)
+        const FVector Goal = PatrolCheckpoints[0];
         BuildPathTo(Goal);
 
         if (PC) { InstallAuxInput(PC); ApplyAlwaysInteractiveInput(PC); }
     }
     else
     {
-        SetCheckpointMeshesHidden(false);
+        // Keep markers hidden in manual mode too
+        SetCheckpointMeshesHidden(true);
 
         ActivePathPoints.Reset();
         ActivePathCumLen.Reset();
@@ -522,14 +631,34 @@ void ASimulationRobotPawn::TogglePatrolMode()
     }
 }
 
-void ASimulationRobotPawn::BeginMission() { if (!bIsPatrolMode) TogglePatrolMode(); }
+void ASimulationRobotPawn::BeginMission()
+{
+    // UI entry guard (minimum 2)
+    if (!HasMinCheckpoints(PatrolCheckpoints))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 2 checkpoints to start patrol."));
+        if (GEngine)
+        {
+            GEngine->AddOnScreenDebugMessage(
+                -1, 2.5f, FColor::Red,
+                TEXT("Place at least 2 checkpoints to start.")
+            );
+        }
+        return; // do NOT start
+    }
+
+    // Snap and start patrol
+    SnapPawnToCheckpoint0(this);
+    SetCheckpointMeshesHidden(true);
+    if (!bIsPatrolMode) TogglePatrolMode();
+}
+
 void ASimulationRobotPawn::EndMission()
 {
     if (bIsPatrolMode) TogglePatrolMode();
     SetAerialView(true);
 }
 
-// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 // The Blueprint calls this to END the simulation and RESTART the level.
 void ASimulationRobotPawn::EndSimulation()
 {
@@ -552,7 +681,6 @@ void ASimulationRobotPawn::EndSimulation()
         UGameplayStatics::OpenLevel(this, LevelName);
     }
 }
-// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 void ASimulationRobotPawn::ToggleLights()
 {
@@ -943,7 +1071,7 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     {
         if (!PatrolCheckpoints.IsEmpty())
         {
-            // From checkpoint #2 on, follow them as waypoints
+            // From checkpoint #2 onward, follow them as waypoints
             CurrentWPIndex = (CurrentWPIndex + 1) % PatrolCheckpoints.Num();
             BuildPathTo(PatrolCheckpoints[CurrentWPIndex]);
         }
@@ -1067,7 +1195,13 @@ void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& Checkpoin
     PatrolCheckpoints = CheckpointLocations;
     CurrentWPIndex = 0;
 
-    // If already in patrol, rebuild from checkpoint #1
+    // Always snap the pawn to checkpoint #0 (keep exact XYZ) when checkpoints are set — safely grounded
+    SnapPawnToCheckpoint0(this);
+
+    // Hide checkpoint visuals on update too (you never want them visible at runtime)
+    SetCheckpointMeshesHidden(true);
+
+    // If already patrolling, rebuild from checkpoint #1
     if (bIsPatrolMode && PatrolCheckpoints.Num() > 0)
     {
         BuildPathTo(PatrolCheckpoints[0]);
