@@ -352,7 +352,7 @@ void AGM_Simulation::SetupSimulationMode()
     // Make sure keyboard binds reach the pawn while AI owns it
     RobotPawn->EnableInput(PC);
 
-    // Start in patrol mode immediately
+    // Start in patrol mode immediately (CP0 is first target)
     RobotPawn->BeginMission();
 
     // Safety: re-assert camera next tick

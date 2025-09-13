@@ -36,7 +36,7 @@ public:
 
     // ---------- Helpers ----------
     UFUNCTION(BlueprintCallable, Category = "Camera")  void SetAerialView(bool bUseAerial);
-    UFUNCTION(BlueprintPure, Category = "Patrol")   bool IsPatrolling() const { return bIsPatrolMode; }
+    UFUNCTION(BlueprintPure, Category = "Patrol")    bool IsPatrolling() const { return bIsPatrolMode; }
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
     UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
@@ -123,7 +123,7 @@ public:
 private:
     // ---------- Patrol / Path ----------
     UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) bool  bIsPatrolMode = false;
-    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) int32 CurrentWPIndex = 0;
+    UPROPERTY(BlueprintReadOnly, Category = "Patrol", meta = (AllowPrivateAccess = "true")) int32 CurrentWPIndex = 0; // current goal index (0 first)
 
     UPROPERTY() TArray<AActor*> Waypoints;
     UPROPERTY(EditAnywhere, Category = "Patrol") float GoalAcceptanceRadius = 150.f;
@@ -155,7 +155,7 @@ private:
 
     // Checkpoint visuals
     UPROPERTY(EditAnywhere, Category = "Patrol|Visual") TSubclassOf<AActor> CheckpointMarkerClass;
-    UPROPERTY(EditAnywhere, Category = "Patrol|Visual") FName             CheckpointMarkerTag;
+    UPROPERTY(EditAnywhere, Category = "Patrol|Visual") FName               CheckpointMarkerTag;
     void SetCheckpointMeshesHidden(bool bHide);
 
     // ---------- Lights ----------
@@ -237,8 +237,7 @@ private:
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true")) bool bSpeedLimited = false;
 
     // ---- Private helpers (need access to PatrolCheckpoints) ----
-    bool HasMinCheckpoints() const;          // true if PatrolCheckpoints.Num() >= 2
-    void SnapToCheckpoint0();                // place on CP0 (grounded)
-    void OrientFrontToward(const FVector& Target);         // set yaw toward Target
-    void OrientFrontTowardNextCheckpoint();                // set yaw toward next checkpoint (current goal)
+    bool HasAnyCheckpoints() const;                // true if PatrolCheckpoints.Num() >= 1
+    void OrientFrontToward(const FVector& Target); // set yaw toward Target
+    void OrientFrontTowardNextCheckpoint();        // set yaw toward current goal index (0 first)
 };

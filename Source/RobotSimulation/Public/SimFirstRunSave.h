@@ -13,7 +13,7 @@ class ROBOTSIMULATION_API USimFirstRunSave : public USaveGame
 public:
     USimFirstRunSave();
 
-    // True once we've applied our one-time graphics setup.
+    /** True once we've applied our one-time graphics setup. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "FirstRun")
     bool bFirstRunApplied;
 };
