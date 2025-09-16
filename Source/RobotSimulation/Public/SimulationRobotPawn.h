@@ -14,6 +14,7 @@ class AWaypoint;
 class ACameraActor;
 class UUserWidget;
 class UThreatBoxesWidget;
+class UThreatComponent;
 
 UCLASS()
 class ROBOTSIMULATION_API ASimulationRobotPawn : public AWheeledVehiclePawn
@@ -27,10 +28,10 @@ public:
     // ---------- UI-callable controls ----------
     UFUNCTION(BlueprintCallable, Category = "Control") void ToggleSpeedLimit();
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void TogglePatrolMode();
-    UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();               // HEADLIGHTS only
+    UFUNCTION(BlueprintCallable, Category = "Lights")  void ToggleLights();
     UFUNCTION(BlueprintCallable, Category = "Mission") void BeginMission();
     UFUNCTION(BlueprintCallable, Category = "Mission") void EndMission();
-    UFUNCTION(BlueprintCallable, Category = "Mission") void EndSimulation();              // <— RESTARTS LEVEL
+    UFUNCTION(BlueprintCallable, Category = "Mission") void EndSimulation();
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ChangeView();
     UFUNCTION(BlueprintCallable, Category = "Camera")  void ForceThirdPersonCamera();
 
@@ -40,14 +41,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Patrol")  void SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations);
     UFUNCTION(BlueprintCallable, Category = "Utility") bool ScreenToWorldLocation(FVector2D ScreenPosition, FVector& WorldLocation);
 
-    // -------- Camera feeds for UI (EXACTLY 360 / FRONT / BACK) --------
+    // -------- Camera feeds for UI --------
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetCam360RT() const { return Cam360RT; }
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetFrontRT() const { return FrontRT; }
     UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetRearRT()  const { return RearRT; }
-    // Back-compat
-    UFUNCTION(BlueprintPure, Category = "Camera|Feeds") UTextureRenderTarget2D* GetSideRT() const { return FrontRT; }
-
-    // (kept for GM_Simulation compatibility)
     UFUNCTION(BlueprintPure, Category = "Camera") AActor* GetThirdPersonViewTarget() const { return (AActor*)ViewTargetProxy; }
 
 protected:
@@ -56,7 +53,7 @@ protected:
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
     // Input helpers
-    void ThrottleInput(float Val);   // supports reverse in manual
+    void ThrottleInput(float Val);
     void SteeringInput(float Val);
     void HandbrakeInput(float Val);
     void LookUp(float Val);
@@ -118,7 +115,11 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Stats") float SpeedKmh = 0.f;
     UPROPERTY(EditAnywhere, Category = "Control", meta = (ClampMin = "0.0")) float MaxSpeedKmh = 22.f;
 
-    UFUNCTION(BlueprintPure, Category = "Threats") int32 GetThreatCount() const;
+    // Threat counters
+    UFUNCTION(BlueprintPure, Category = "Threats") int32 GetThreatCount() const;                 // cumulative (never decreases)
+    UFUNCTION(BlueprintPure, Category = "Threats") int32 GetActiveThreatsInRange() const { return NearbyThreats.Num(); }
+    UFUNCTION(BlueprintPure, Category = "Threats") int32 GetUniqueThreatsSeen()   const { return AllThreatsEverSeen.Num(); }
+    UFUNCTION(BlueprintCallable, Category = "Threats") void ResetThreatCounters();
 
 private:
     // ---------- Patrol / Path ----------
@@ -179,8 +180,23 @@ private:
 
     // ---------- Threat / UI ----------
     UPROPERTY(VisibleAnywhere, Category = "Threats") USphereComponent* ThreatSensor = nullptr;
-    UPROPERTY(EditAnywhere, Category = "Threats")  float ThreatSenseRadius = 1200.f;
-    UPROPERTY(EditAnywhere, Category = "Threats")  bool  bDrawThreatBoxes = true;
+    UPROPERTY(EditAnywhere, Category = "Threats", meta = (ClampMin = "50.0")) float ThreatSenseRadius = 1200.f;
+
+    // Separate controls for debug vs UI overlay
+    /** Show threat overlay widget in all builds (including Shipping) */
+    UPROPERTY(EditAnywhere, Category = "Threats", meta = (DisplayName = "Show Threat Overlay"))
+    bool bShowThreatOverlay = true;
+
+    /** Show debug boxes in Development/Debug builds only (ignored in Shipping) */
+    UPROPERTY(EditAnywhere, Category = "Threats", meta = (DisplayName = "Debug: Draw Threat Boxes"))
+    bool bDrawThreatDebugBoxes = true;
+
+    // Filtering controls
+    /** If true (default), only actors with UThreatComponent are considered threats. */
+    UPROPERTY(EditAnywhere, Category = "Threats")  bool  bRequireThreatComponent = true;
+
+    /** Optional: if set (e.g. "Threat"), actor must contain this tag to be considered a threat. */
+    UPROPERTY(EditAnywhere, Category = "Threats")  FName ThreatRequiredActorTag;
 
     UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UUserWidget>        HUDWidgetClass;
     UPROPERTY() UUserWidget* HUDWidget = nullptr;
@@ -188,12 +204,22 @@ private:
     UPROPERTY(EditAnywhere, Category = "UI") TSubclassOf<UThreatBoxesWidget> ThreatOverlayWidgetClass;
     UPROPERTY() UThreatBoxesWidget* ThreatOverlayWidget = nullptr;
 
+    // In-range set
     TSet<TWeakObjectPtr<AActor>> NearbyThreats;
 
+    // Cumulative counters/sets
+    UPROPERTY(BlueprintReadOnly, Category = "Threats", meta = (AllowPrivateAccess = "true"))
+    int32 TotalThreatDetections = 0;                    // increments on each qualified begin overlap
+    TSet<TWeakObjectPtr<AActor>> AllThreatsEverSeen;    // unique actors ever detected
+
+    // Overlap handlers
     UFUNCTION() void OnThreatBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
         UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
     UFUNCTION() void OnThreatEnd(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
         UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
+
+    // Filter helper
+    bool QualifiesAsThreat(AActor* OtherActor) const;
 
     void DrawThreatDebug();
     void UpdateThreatOverlay();
@@ -236,8 +262,8 @@ private:
     // Speed limit
     UPROPERTY(BlueprintReadOnly, Category = "Control", meta = (AllowPrivateAccess = "true")) bool bSpeedLimited = false;
 
-    // ---- Private helpers (need access to PatrolCheckpoints) ----
-    bool HasAnyCheckpoints() const;                // true if PatrolCheckpoints.Num() >= 1
-    void OrientFrontToward(const FVector& Target); // set yaw toward Target
-    void OrientFrontTowardNextCheckpoint();        // set yaw toward current goal index (0 first)
+    // ---- Private helpers ----
+    bool HasAnyCheckpoints() const;
+    void OrientFrontToward(const FVector& Target);
+    void OrientFrontTowardNextCheckpoint();
 };

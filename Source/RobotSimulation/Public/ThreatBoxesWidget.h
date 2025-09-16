@@ -1,34 +1,19 @@
 #pragma once
+
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "ThreatScreenBox.h"
 #include "ThreatBoxesWidget.generated.h"
 
-/**
- * Draws red rectangles + labels for threats projected to screen space.
- * Works in Shipping builds and handles DPI/viewport scaling correctly.
- */
+/** Draws rectangles + labels for threats. Expects Min/Max in this widget's local space (DPI-correct). */
 UCLASS()
 class ROBOTSIMULATION_API UThreatBoxesWidget : public UUserWidget
 {
     GENERATED_BODY()
 
 public:
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
-    FLinearColor BoxColor = FLinearColor(1, 0, 0, 1);
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (ClampMin = "0.5", ClampMax = "6.0"))
-    float Thickness = 2.f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (ClampMin = "8", ClampMax = "64"))
-    int32 TextSize = 16;
-
     UFUNCTION(BlueprintCallable, Category = "Threats")
-    void SetBoxes(const TArray<FThreatScreenBox>& InBoxes)
-    {
-        Boxes = InBoxes;
-        Invalidate(EInvalidateWidget::Paint);
-    }
+    void SetBoxes(const TArray<FThreatScreenBox>& InBoxes);
 
 protected:
     virtual void NativeConstruct() override;
@@ -42,10 +27,22 @@ protected:
         const FWidgetStyle& InWidgetStyle,
         bool bParentEnabled) const override;
 
-private:
-    // Incoming Min/Max are viewport-relative pixels (PlayerViewportRelative = true).
-    static FVector2D ViewportToLocal(const FVector2D& ViewportPx, const FGeometry& Geo);
-    static void ClampRectToLocal(FVector2D& TL, FVector2D& BR, const FVector2D& LocalSize);
+    // ------------ Visuals ------------
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visuals")
+    FLinearColor BoxColor = FLinearColor(1.f, 0.f, 0.f, 1.f);
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visuals", meta = (ClampMin = "0.5", ClampMax = "10.0"))
+    float BoxThickness = 2.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visuals")
+    FSlateFontInfo LabelFont;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visuals")
+    FLinearColor LabelColor = FLinearColor(1.f, 0.f, 0.f, 1.f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visuals", meta = (ClampMin = "0.0"))
+    float LabelPadding = 4.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Threats")
     TArray<FThreatScreenBox> Boxes;
 };

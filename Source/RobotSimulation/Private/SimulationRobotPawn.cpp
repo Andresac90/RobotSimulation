@@ -17,7 +17,11 @@
 #include "ThreatScreenBox.h"
 #include "ThreatComponent.h"
 #include "Components/PrimitiveComponent.h"
-#include "Engine/Engine.h" // GEngine->AddOnScreenDebugMessage
+
+#include "Blueprint/WidgetLayoutLibrary.h"
+
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 
 #define LOG_PTR(Name, Ptr) UE_LOG(LogTemp, Log, TEXT("[RobotPawn] %s: %s"), TEXT(Name), Ptr ? *Ptr->GetName() : TEXT("<null>"))
 
@@ -137,9 +141,12 @@ ASimulationRobotPawn::ASimulationRobotPawn(const FObjectInitializer& ObjInit)
     ThreatSensor = CreateDefaultSubobject<USphereComponent>(TEXT("ThreatSensor"));
     ThreatSensor->SetupAttachment(RootComponent);
     ThreatSensor->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-    ThreatSensor->SetCollisionObjectType(ECC_WorldDynamic);
-    ThreatSensor->SetCollisionResponseToAllChannels(ECR_Overlap);
-    ThreatSensor->SetSphereRadius(ThreatSenseRadius);
+    ThreatSensor->SetCollisionResponseToAllChannels(ECR_Ignore);
+    ThreatSensor->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+    ThreatSensor->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+    ThreatSensor->SetCollisionResponseToChannel(ECC_Vehicle, ECR_Overlap);
+    ThreatSensor->SetSphereRadius(ThreatSenseRadius, true);
+    ThreatSensor->SetGenerateOverlapEvents(true);
 
     AutoPossessPlayer = EAutoReceiveInput::Player0;
     AutoPossessAI = EAutoPossessAI::Disabled;
@@ -185,7 +192,7 @@ void ASimulationRobotPawn::BeginPlay()
     auto CreateRT_LDR = [&](const TCHAR* Name, int32 W, int32 H) -> UTextureRenderTarget2D*
         {
             UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(this, Name);
-            RT->InitCustomFormat(W, H, PF_B8G8R8A8, /*bForceLinearGamma*/ false);
+            RT->InitCustomFormat(W, H, PF_B8G8R8A8, false);
             RT->ClearColor = FLinearColor(0.f, 0.f, 0.f, 1.f);
             RT->TargetGamma = 2.2f;
             RT->UpdateResourceImmediate(true);
@@ -267,7 +274,7 @@ void ASimulationRobotPawn::BeginPlay()
     // Hide any checkpoint visuals at runtime
     SetCheckpointMeshesHidden(true);
 
-    // NOTE: Do NOT move the pawn to CP0. It stays at PlayerStart.
+    ResetThreatCounters();
 }
 
 void ASimulationRobotPawn::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -328,13 +335,15 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
         InteriorPivot->SetRelativeRotation(R);
     }
 
-    if (bDrawThreatBoxes) DrawThreatDebug();
-    UpdateThreatOverlay();
+    // Threat visuals
+    DrawThreatDebug();      // Only draws in dev builds, controlled by bDrawThreatDebugBoxes
+    UpdateThreatOverlay();  // Always updates if widget exists, controlled by bShowThreatOverlay
 
     // Safety: never drive if we don’t have at least 1 checkpoint
     if (bIsPatrolMode && !HasAnyCheckpoints())
     {
         UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Patrol prevented/cancelled (need at least 1 checkpoint)."));
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
         if (GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
@@ -342,6 +351,7 @@ void ASimulationRobotPawn::Tick(float DeltaTime)
                 TEXT("Place at least one checkpoint to start.")
             );
         }
+#endif
 
         // Hard cancel patrol immediately (do not rely on UI)
         bIsPatrolMode = false;
@@ -472,8 +482,8 @@ void ASimulationRobotPawn::ThrottleInput(float Val)
     const bool  bWantReverse = (Val < -KINDA_SMALL_NUMBER);
     const float amt = FMath::Abs(Val);
 
-    // Forward speed limit (only for forward)
-    if (bSpeedLimited && !bWantReverse && fwdSpeed >= MaxSpeedKmh)
+    // Always enforce the current cap (MaxSpeedKmh is 15 when limited, 25 when not)
+    if (!bWantReverse && fwdSpeed >= MaxSpeedKmh)
     {
         M->SetThrottleInput(0.f);
         return;
@@ -505,6 +515,7 @@ void ASimulationRobotPawn::ThrottleInput(float Val)
         M->SetThrottleInput(Val);
     }
 }
+
 void ASimulationRobotPawn::SteeringInput(float Val)
 {
     if (bIsPatrolMode) return;
@@ -536,9 +547,32 @@ void ASimulationRobotPawn::Turn(float V)
 // Modes
 void ASimulationRobotPawn::ToggleSpeedLimit()
 {
+    // Flip state: ON = 15 km/h cap, OFF = 25 km/h cap
     bSpeedLimited = !bSpeedLimited;
-    if (auto* C = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
-        C->EngineSetup.MaxRPM = 3000.f; // simple cap
+    MaxSpeedKmh = bSpeedLimited ? 15.f : 25.f;
+
+    // Optionally nudge inputs so the new cap takes effect immediately
+    if (auto* M = Cast<UChaosWheeledVehicleMovementComponent>(GetVehicleMovementComponent()))
+    {
+        if (SpeedKmh > MaxSpeedKmh)
+        {
+            M->SetThrottleInput(0.f);
+            M->SetBrakeInput(0.4f);
+        }
+        else
+        {
+            M->SetBrakeInput(0.f);
+        }
+    }
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+    if (GEngine)
+    {
+        const FString State = bSpeedLimited ? TEXT("ON (15 km/h)") : TEXT("OFF (25 km/h)");
+        GEngine->AddOnScreenDebugMessage(-1, 1.25f, FColor::Yellow,
+            FString::Printf(TEXT("Speed limit: %s"), *State));
+    }
+#endif
 }
 
 void ASimulationRobotPawn::TogglePatrolMode()
@@ -547,6 +581,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
     if (!bIsPatrolMode && !HasAnyCheckpoints())
     {
         UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 1 checkpoint to start patrol."));
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
         if (GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
@@ -554,6 +589,7 @@ void ASimulationRobotPawn::TogglePatrolMode()
                 TEXT("Place at least one checkpoint to start.")
             );
         }
+#endif
         return; // do NOT toggle
     }
 
@@ -608,6 +644,7 @@ void ASimulationRobotPawn::BeginMission()
     if (!HasAnyCheckpoints())
     {
         UE_LOG(LogTemp, Warning, TEXT("[RobotPawn] Need at least 1 checkpoint to start patrol."));
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
         if (GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
@@ -615,6 +652,7 @@ void ASimulationRobotPawn::BeginMission()
                 TEXT("Place at least one checkpoint to start.")
             );
         }
+#endif
         return; // do NOT start
     }
 
@@ -812,7 +850,7 @@ void ASimulationRobotPawn::RecomputeCumulativeLength()
     CachedClosestSeg = 0;
 }
 
-bool ASimulationRobotPawn::FindClosestOnPath2D(const FVector& Pos, int32& OutSeg, float& OutT, FVector& OutPoint) const
+bool ASimulationRobotPawn::FindClosestOnPath2D(const FVector& Pos, int32& OutSeg, float& OutSegT, FVector& OutPoint) const
 {
     if (ActivePathPoints.Num() < 2) return false;
 
@@ -838,7 +876,9 @@ bool ASimulationRobotPawn::FindClosestOnPath2D(const FVector& Pos, int32& OutSeg
         }
     }
 
-    OutSeg = BestSeg; OutT = BestT; OutPoint = BestP;
+    OutSeg = BestSeg;
+    OutSegT = BestT;   // <-- fixed: was OutT
+    OutPoint = BestP;
     return true;
 }
 
@@ -1040,7 +1080,8 @@ void ASimulationRobotPawn::DriveAlongPath(float Dt)
     }
 
     // Reached goal? Advance index (wrap) or re-target same if only one CP.
-    if (Remaining <= GoalAcceptanceRadius)
+    const float SNow2 = ActivePathTotalLen - SNow;
+    if (SNow2 <= GoalAcceptanceRadius)
     {
         if (!PatrolCheckpoints.IsEmpty())
         {
@@ -1088,20 +1129,63 @@ bool ASimulationRobotPawn::ScreenToWorldLocation(FVector2D ScreenPos, FVector& W
     return false;
 }
 
+// ---------- Threat filtering ----------
+bool ASimulationRobotPawn::QualifiesAsThreat(AActor* OtherActor) const
+{
+    if (!OtherActor || OtherActor == this) return false;
+
+    // Require a specific actor tag if configured (e.g. set to "Threat" in Details panel)
+    if (!ThreatRequiredActorTag.IsNone() && !OtherActor->Tags.Contains(ThreatRequiredActorTag))
+    {
+        return false;
+    }
+
+    // Require component if enabled (default true)
+    if (bRequireThreatComponent)
+    {
+        const UThreatComponent* TC = OtherActor->FindComponentByClass<UThreatComponent>();
+        if (!TC) return false;
+    }
+
+    // Basic sanity: must have at least one primitive that actually overlaps
+    TInlineComponentArray<UPrimitiveComponent*> Prims;
+    OtherActor->GetComponents(Prims);
+    for (UPrimitiveComponent* P : Prims)
+    {
+        if (!P) continue;
+        if (P->GetGenerateOverlapEvents() && P->GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Threats
 void ASimulationRobotPawn::OnThreatBegin(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
     UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/, bool /*bFromSweep*/, const FHitResult& /*SweepResult*/)
 {
-    if (OtherActor && OtherActor != this) NearbyThreats.Add(OtherActor);
+    if (!QualifiesAsThreat(OtherActor)) return;
+
+    NearbyThreats.Add(OtherActor);      // in-range set
+    ++TotalThreatDetections;            // cumulative count (never decrements)
+    AllThreatsEverSeen.Add(OtherActor); // unique actors ever seen
 }
 void ASimulationRobotPawn::OnThreatEnd(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
     UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/)
 {
-    if (OtherActor) NearbyThreats.Remove(OtherActor);
+    if (OtherActor)
+    {
+        NearbyThreats.Remove(OtherActor);  // cumulative count remains
+    }
 }
 
 void ASimulationRobotPawn::DrawThreatDebug()
 {
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+    // Only draw debug boxes in development builds
+    if (!bDrawThreatDebugBoxes) return;
+
     for (TWeakObjectPtr<AActor> T : NearbyThreats)
     {
         if (!T.IsValid()) continue;
@@ -1124,47 +1208,87 @@ void ASimulationRobotPawn::DrawThreatDebug()
             0.f,
             true);
     }
+#endif
 }
 
 void ASimulationRobotPawn::UpdateThreatOverlay()
 {
-    if (!ThreatOverlayWidget) return;
+    if (!ThreatOverlayWidget || !bShowThreatOverlay)
+    {
+        if (ThreatOverlayWidget && !bShowThreatOverlay)
+        {
+            ThreatOverlayWidget->SetBoxes(TArray<FThreatScreenBox>{});
+        }
+        return;
+    }
+
     APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
     if (!PC) return;
 
-    TArray<FThreatScreenBox> Boxes;
+    TArray<FThreatScreenBox> OutBoxes;
+    OutBoxes.Reserve(NearbyThreats.Num());
+
     for (TWeakObjectPtr<AActor> T : NearbyThreats)
     {
         if (!T.IsValid()) continue;
+
         const FBox Bounds = T->GetComponentsBoundingBox(true);
         const FVector Min = Bounds.Min, Max = Bounds.Max;
+
         const FVector C[8] = {
             {Min.X,Min.Y,Min.Z},{Max.X,Min.Y,Min.Z},{Max.X,Max.Y,Min.Z},{Min.X,Max.Y,Min.Z},
             {Min.X,Min.Y,Max.Z},{Max.X,Min.Y,Max.Z},{Max.X,Max.Y,Max.Z},{Min.X,Max.Y,Max.Z}
         };
-        FVector2D MinS(FLT_MAX, FLT_MAX), MaxS(-FLT_MAX, -FLT_MAX);
+
+        FVector2D MinW(FLT_MAX, FLT_MAX), MaxW(-FLT_MAX, -FLT_MAX);
         bool bAny = false;
+
+        // DPI-/UMG-correct projection for widget positioning
         for (int i = 0; i < 8; ++i)
         {
             FVector2D S;
-            if (PC->ProjectWorldLocationToScreen(C[i], S, true))
+            if (UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PC, C[i], S, /*bPlayerViewportRelative*/ false))
             {
                 bAny = true;
-                MinS.X = FMath::Min(MinS.X, S.X); MinS.Y = FMath::Min(MinS.Y, S.Y);
-                MaxS.X = FMath::Max(MaxS.X, S.X); MaxS.Y = FMath::Max(MaxS.Y, S.Y);
+                MinW.X = FMath::Min(MinW.X, S.X);
+                MinW.Y = FMath::Min(MinW.Y, S.Y);
+                MaxW.X = FMath::Max(MaxW.X, S.X);
+                MaxW.Y = FMath::Max(MaxW.Y, S.Y);
             }
         }
+
         if (!bAny) continue;
-        FThreatScreenBox Bx; Bx.Min = MinS; Bx.Max = MaxS;
-        Boxes.Add(Bx);
+
+        FThreatScreenBox Bx;
+        Bx.Min = MinW;  // already widget-local; the widget will clamp
+        Bx.Max = MaxW;
+
+        if (UThreatComponent* TC = T->FindComponentByClass<UThreatComponent>())
+        {
+            Bx.Label = FText::FromName(TC->ThreatLabel);
+        }
+        else
+        {
+            Bx.Label = FText::FromString(TEXT("Threat"));
+        }
+
+        OutBoxes.Add(Bx);
     }
-    ThreatOverlayWidget->SetBoxes(Boxes);
+
+    ThreatOverlayWidget->SetBoxes(OutBoxes);
 }
 
 // -------- Blueprint helpers / API --------
 int32 ASimulationRobotPawn::GetThreatCount() const
 {
-    return NearbyThreats.Num();
+    return TotalThreatDetections; // cumulative
+}
+
+void ASimulationRobotPawn::ResetThreatCounters()
+{
+    TotalThreatDetections = 0;
+    AllThreatsEverSeen.Reset();
+    NearbyThreats.Reset();
 }
 
 void ASimulationRobotPawn::SetPatrolCheckpoints(const TArray<FVector>& CheckpointLocations)

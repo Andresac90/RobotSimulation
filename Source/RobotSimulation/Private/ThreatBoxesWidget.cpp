@@ -1,43 +1,21 @@
 #include "ThreatBoxesWidget.h"
 #include "Rendering/DrawElements.h"
-#include "Fonts/SlateFontInfo.h"
 #include "Styling/CoreStyle.h"
-#include "Engine/Engine.h"
-#include "Engine/GameViewportClient.h"
 
 void UThreatBoxesWidget::NativeConstruct()
 {
     Super::NativeConstruct();
-    // Nothing required here; SetBoxes() drives repaints.
+
+    if (!LabelFont.HasValidFont())
+    {
+        LabelFont = FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14);
+    }
 }
 
-FVector2D UThreatBoxesWidget::ViewportToLocal(const FVector2D& ViewportPx, const FGeometry& Geo)
+void UThreatBoxesWidget::SetBoxes(const TArray<FThreatScreenBox>& InBoxes)
 {
-    // Get the current game viewport size (in screen pixels).
-    FVector2D ViewportSize(0.f, 0.f);
-    if (GEngine && GEngine->GameViewport)
-    {
-        GEngine->GameViewport->GetViewportSize(ViewportSize);
-    }
-
-    // If we have a real size, map viewport pixels -> normalized -> widget local.
-    if (ViewportSize.X > 0.f && ViewportSize.Y > 0.f)
-    {
-        const FVector2D LocalSize = Geo.GetLocalSize();
-        const FVector2D N(ViewportPx.X / ViewportSize.X, ViewportPx.Y / ViewportSize.Y);
-        return FVector2D(N.X * LocalSize.X, N.Y * LocalSize.Y);
-    }
-
-    // Fallback: treat as absolute desktop pixels and convert.
-    return Geo.AbsoluteToLocal(ViewportPx);
-}
-
-void UThreatBoxesWidget::ClampRectToLocal(FVector2D& TL, FVector2D& BR, const FVector2D& LocalSize)
-{
-    TL.X = FMath::Clamp(TL.X, 0.f, LocalSize.X);
-    TL.Y = FMath::Clamp(TL.Y, 0.f, LocalSize.Y);
-    BR.X = FMath::Clamp(BR.X, 0.f, LocalSize.X);
-    BR.Y = FMath::Clamp(BR.Y, 0.f, LocalSize.Y);
+    Boxes = InBoxes;
+    Invalidate(EInvalidateWidget::Paint); // repaint this frame
 }
 
 int32 UThreatBoxesWidget::NativePaint(
@@ -49,99 +27,76 @@ int32 UThreatBoxesWidget::NativePaint(
     const FWidgetStyle& InWidgetStyle,
     bool bParentEnabled) const
 {
-    const FLinearColor C = BoxColor.CopyWithNewOpacity(1.f);
-    const float W = FMath::Max(0.5f, Thickness);
-    const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), FMath::Clamp(TextSize, 8, 64));
+    const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
+        OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+
+    if (Boxes.Num() == 0) return BaseLayer;
 
     const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
+    if (LocalSize.X <= 0.f || LocalSize.Y <= 0.f) return BaseLayer;
 
-    // Modern API: build a paint geometry once for the whole widget area (lines)
-    const FPaintGeometry FullPG = AllottedGeometry.ToPaintGeometry(
-        FVector2f(LocalSize.X, LocalSize.Y),
-        FSlateLayoutTransform()  // identity
-    );
+    // Preserve all accumulated transforms from parent/layout
+    const FPaintGeometry PG = AllottedGeometry.ToPaintGeometry();
+    const float W = FMath::Max(0.5f, BoxThickness);
+
+    auto ClampLocal = [&](FVector2D& P)
+        {
+            P.X = FMath::Clamp(P.X, 0.f, LocalSize.X);
+            P.Y = FMath::Clamp(P.Y, 0.f, LocalSize.Y);
+        };
+
+    const FSlateFontInfo UseFont = LabelFont.HasValidFont()
+        ? LabelFont
+        : FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14);
 
     for (const FThreatScreenBox& B : Boxes)
     {
-        // Convert viewport pixel coords to widget-local
-        FVector2D TL = ViewportToLocal(B.Min, AllottedGeometry);
-        FVector2D BR = ViewportToLocal(B.Max, AllottedGeometry);
+        FVector2D TL = B.Min;  // already in this widget's local space
+        FVector2D BR = B.Max;
 
-        // Ensure TL is top-left and BR is bottom-right
         if (TL.X > BR.X) Swap(TL.X, BR.X);
         if (TL.Y > BR.Y) Swap(TL.Y, BR.Y);
 
-        // Clamp into the widget bounds to avoid drawing offscreen
-        ClampRectToLocal(TL, BR, LocalSize);
-
-        // Skip degenerate rects (can happen if fully offscreen)
-        if ((BR - TL).SizeSquared() < KINDA_SMALL_NUMBER)
-        {
-            continue;
-        }
+        ClampLocal(TL);
+        ClampLocal(BR);
+        if ((BR - TL).SizeSquared() < KINDA_SMALL_NUMBER) continue;
 
         const FVector2D TR(BR.X, TL.Y);
         const FVector2D BL(TL.X, BR.Y);
 
-        // Draw 4 rectangle edges with the same paint geometry
+        // 4 edges
         {
-            // Top
-            {
-                TArray<FVector2D> P; P.Reserve(2);
-                P.Add(TL); P.Add(TR);
-                FSlateDrawElement::MakeLines(
-                    OutDrawElements, LayerId,
-                    FullPG,
-                    P, ESlateDrawEffect::None, C, true, W);
-            }
-            // Right
-            {
-                TArray<FVector2D> P; P.Reserve(2);
-                P.Add(TR); P.Add(BR);
-                FSlateDrawElement::MakeLines(
-                    OutDrawElements, LayerId,
-                    FullPG,
-                    P, ESlateDrawEffect::None, C, true, W);
-            }
-            // Bottom
-            {
-                TArray<FVector2D> P; P.Reserve(2);
-                P.Add(BR); P.Add(BL);
-                FSlateDrawElement::MakeLines(
-                    OutDrawElements, LayerId,
-                    FullPG,
-                    P, ESlateDrawEffect::None, C, true, W);
-            }
-            // Left
-            {
-                TArray<FVector2D> P; P.Reserve(2);
-                P.Add(BL); P.Add(TL);
-                FSlateDrawElement::MakeLines(
-                    OutDrawElements, LayerId,
-                    FullPG,
-                    P, ESlateDrawEffect::None, C, true, W);
-            }
+            TArray<FVector2D> P; P.Reserve(2);
+
+            P = { TL, TR };
+            FSlateDrawElement::MakeLines(OutDrawElements, BaseLayer + 1, PG, P, ESlateDrawEffect::None, BoxColor, true, W);
+            P = { TR, BR };
+            FSlateDrawElement::MakeLines(OutDrawElements, BaseLayer + 1, PG, P, ESlateDrawEffect::None, BoxColor, true, W);
+            P = { BR, BL };
+            FSlateDrawElement::MakeLines(OutDrawElements, BaseLayer + 1, PG, P, ESlateDrawEffect::None, BoxColor, true, W);
+            P = { BL, TL };
+            FSlateDrawElement::MakeLines(OutDrawElements, BaseLayer + 1, PG, P, ESlateDrawEffect::None, BoxColor, true, W);
         }
 
-        // Label (inside box, small margin)
-        const float LabelPad = 4.f;
-        const FVector2D LabelPos = FVector2D(TL.X + LabelPad, TL.Y + LabelPad);
+        if (!B.Label.IsEmpty())
+        {
+            const FVector2D LabelPos(TL.X + LabelPadding, TL.Y + LabelPadding);
+            const FPaintGeometry TextPG = AllottedGeometry.ToPaintGeometry(
+                FVector2f(1.f, 1.f),
+                FSlateLayoutTransform(FVector2f(LabelPos))
+            );
 
-        const FPaintGeometry TextPG = AllottedGeometry.ToPaintGeometry(
-            FVector2f(1.f, 1.f),                         // not used for text sizing here
-            FSlateLayoutTransform(FVector2f(LabelPos.X, LabelPos.Y))
-        );
-
-        FSlateDrawElement::MakeText(
-            OutDrawElements,
-            LayerId + 1,
-            TextPG,
-            B.Label.IsEmpty() ? FText::FromString(TEXT("Threat")) : B.Label,
-            Font,
-            ESlateDrawEffect::None,
-            C
-        );
+            FSlateDrawElement::MakeText(
+                OutDrawElements,
+                BaseLayer + 2,
+                TextPG,
+                B.Label,
+                UseFont,
+                ESlateDrawEffect::None,
+                LabelColor
+            );
+        }
     }
 
-    return LayerId + 2;
+    return BaseLayer + 3;
 }
